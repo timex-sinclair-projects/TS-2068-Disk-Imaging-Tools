@@ -27,6 +27,12 @@ A comprehensive Python toolkit for analyzing and extracting files from TS-2068 c
 
 ### Installation
 
+#### Option 1: Download Release (Recommended)
+1. **Download** the latest release zip from [GitHub Releases](https://github.com/yourusername/TS-2068-Disk-Imaging-Tools/releases)
+2. **Extract** the zip file to your desired location
+3. **Ready to use** - No additional setup required
+
+#### Option 2: Clone Repository
 ```bash
 git clone https://github.com/yourusername/TS-2068-Disk-Imaging-Tools.git
 cd TS-2068-Disk-Imaging-Tools
