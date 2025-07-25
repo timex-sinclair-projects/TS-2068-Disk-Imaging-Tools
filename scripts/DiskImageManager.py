@@ -117,12 +117,50 @@ class DiskImageManager:
                     else:
                         return "[Zebra CP/M]"
             elif filepath.lower().endswith('.img'):
-                # Check file size to guess Larken vs Oliger
-                size = os.path.getsize(filepath)
-                if size > 300000:
-                    return "[Likely Larken]"
-                else:
-                    return "[Likely Oliger]"
+                # Enhanced detection for Larken vs Oliger formats
+                with open(filepath, 'rb') as f:
+                    # Read enough data to check both formats
+                    f.seek(0)
+                    data = f.read(0x700)  # Read up to 1792 bytes
+                    
+                    # Check for Larken format characteristics
+                    # Larken: Directory starts at offset 0xBC (188) with 0xFF marker
+                    if len(data) > 0xBC and data[0xBC] == 0xFF:
+                        # Additional validation: check for typical Larken patterns
+                        # Larken uses 0xFD for block list start, 0xF9 for end
+                        larken_markers = 0
+                        for i in range(0xBC, min(len(data), 0x200)):
+                            if data[i] in [0xFF, 0xFD, 0xF9, 0xFA, 0xFE]:
+                                larken_markers += 1
+                        
+                        if larken_markers > 3:
+                            return "[Larken]"
+                    
+                    # Check for Oliger format characteristics
+                    # Oliger: Directory header at 0x600, entries at 0x620
+                    if len(data) > 0x620:
+                        # Oliger has disk parameters at 0x600
+                        dir_header = data[0x600:0x620]
+                        if len(dir_header) >= 5:
+                            tracks = dir_header[0]
+                            sides = dir_header[1]
+                            total_cylinders = dir_header[2]
+                            
+                            # Validate reasonable disk parameters
+                            if 35 <= tracks <= 45 and sides in [1, 2] and total_cylinders > 0:
+                                # Additional check: disk name at offset 0x610
+                                disk_name = dir_header[16:32]
+                                # Check if disk name contains printable characters
+                                printable_chars = sum(1 for c in disk_name if 32 <= c <= 126 or c == 0)
+                                if printable_chars >= 4:
+                                    return "[Oliger]"
+                    
+                    # Fallback to file size heuristic
+                    size = os.path.getsize(filepath)
+                    if size > 300000:
+                        return "[Likely Larken]"
+                    else:
+                        return "[Likely Oliger]"
             else:
                 return "[Unknown]"
         except:
@@ -193,17 +231,27 @@ class DiskImageManager:
                 self.run_script("ZebraRead_universal.py", ["-f", filepath, "-c"])
             
             elif filepath.lower().endswith('.img'):
-                # Try both Larken and Oliger
-                print("Trying Larken format...")
-                result = self.run_script("LarkenRead_optimized.py", ["-f", filepath, "-c"], capture_output=True)
-                
-                if "Empty catalog" in result or not result.strip():
-                    print("Not Larken format. Trying Oliger format...")
-                    self.run_script("OligerRead_optimized.py", ["-f", filepath, "-c"])
-                else:
+                # Use improved detection to determine format
+                if "[Larken]" in format_hint:
                     print("Format: Larken")
                     print()
-                    print(result)
+                    self.run_script("LarkenRead_optimized.py", ["-f", filepath, "-c"])
+                elif "[Oliger]" in format_hint:
+                    print("Format: Oliger")
+                    print()
+                    self.run_script("OligerRead_optimized.py", ["-f", filepath, "-c"])
+                else:
+                    # Fallback: try both formats
+                    print("Format uncertain, trying Larken format...")
+                    result = self.run_script("LarkenRead_optimized.py", ["-f", filepath, "-c"], capture_output=True)
+                    
+                    if "Empty catalog" in result or not result.strip():
+                        print("Not Larken format. Trying Oliger format...")
+                        self.run_script("OligerRead_optimized.py", ["-f", filepath, "-c"])
+                    else:
+                        print("Format: Larken")
+                        print()
+                        print(result)
             
             else:
                 print("Unknown format - trying universal scanner...")
@@ -242,17 +290,27 @@ class DiskImageManager:
                 print("Use analyze option to view file catalog.")
             
             elif filepath.lower().endswith('.img'):
-                # Try Larken first, then Oliger
-                print("Attempting Larken extraction...")
-                result = self.run_script("LarkenRead_optimized.py", ["-f", filepath, "-c"], capture_output=True)
-                
-                if "Empty catalog" in result or not result.strip():
-                    print("Not Larken format. Attempting Oliger extraction...")
-                    self.run_script("OligerRead_optimized.py", ["-f", filepath])
-                else:
+                # Use improved detection to determine format
+                if "[Larken]" in format_hint:
                     print("Format detected: Larken")
                     print()
                     self.run_script("LarkenRead_optimized.py", ["-f", filepath])
+                elif "[Oliger]" in format_hint:
+                    print("Format detected: Oliger")
+                    print()
+                    self.run_script("OligerRead_optimized.py", ["-f", filepath])
+                else:
+                    # Fallback: try Larken first, then Oliger
+                    print("Format uncertain, attempting Larken extraction...")
+                    result = self.run_script("LarkenRead_optimized.py", ["-f", filepath, "-c"], capture_output=True)
+                    
+                    if "Empty catalog" in result or not result.strip():
+                        print("Not Larken format. Attempting Oliger extraction...")
+                        self.run_script("OligerRead_optimized.py", ["-f", filepath])
+                    else:
+                        print("Format detected: Larken")
+                        print()
+                        self.run_script("LarkenRead_optimized.py", ["-f", filepath])
             
             else:
                 print("Unknown format - cannot extract files")
