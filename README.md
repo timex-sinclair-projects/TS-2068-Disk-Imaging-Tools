@@ -101,7 +101,7 @@ gw read --format=ibm.720 disk.dsk
 - Start with 40 tracks for most disks
 - Try 42 tracks if extraction seems incomplete
 - Check physical disk labels for sided information
-- IMG format preserves raw magnetic flux data for best compatibility
+- IMG format saves disk as a binary/ASCII file for best compatibility
 
 ## File Structure
 
