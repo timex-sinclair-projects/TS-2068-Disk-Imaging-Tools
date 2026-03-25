@@ -12,6 +12,8 @@ import string
 # Constants for CPC DSK format
 CPC_DSK_HEADER = b"EXTENDED CPC DSK"
 HEADER_SIZE = 0x100  # 256 bytes
+ALLOCATION_UNIT_SIZE = 1024  # Default AU size
+SECTOR_SIZE = 256
 
 # Directory markers
 MARKER_ROOT_DIR = 0xFF
@@ -21,6 +23,9 @@ MARKER_UNUSED = 0xE5
 
 # Known root directory offset
 ROOT_DIR_OFFSET = 0x2880
+
+# Track skew table for proper sector interleaving (from tomato C++ implementation)
+TRACK_SKEW = [0, 7, 14, 5, 12, 3, 10, 1, 8, 15, 6, 13, 4, 11, 2, 9]
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Universal scanner for CPC DSK images")
@@ -38,7 +43,7 @@ def make_safe_filename(input_filename):
     return "".join(c for c in input_filename if c in safechars)
 
 def scan_directory_area(data, offset, verbose=False):
-    """Scan a potential directory area for entries"""
+    """Scan a potential directory area for entries with enhanced metadata parsing"""
     entries = []
     
     # Check if this area starts with DIRSCP header
@@ -67,15 +72,35 @@ def scan_directory_area(data, offset, verbose=False):
                             type_bytes = data[i+9:i+12]
                             file_type = type_bytes.decode('ascii', errors='ignore').strip()
                             
-                            # Get metadata
-                            meta_bytes = data[i+12:i+20]
+                            # Enhanced metadata parsing (from tomato implementation)
+                            entry_data = data[i:i+32]
+                            part_num = entry_data[12]  # Part number for multi-part files
+                            tail_bytes = entry_data[13]  # Tail bytes in last sector
+                            size_hi = entry_data[14]  # Size high byte
+                            size_lo = entry_data[15]  # Size low byte
+                            alloc_info = entry_data[16:32]  # Allocation blocks
+                            
+                            # Calculate file size in sectors
+                            file_size_sectors = (size_hi << 8) | size_lo
+                            
+                            # Parse file attributes
+                            is_hidden = (type_bytes[1] & 0x80) != 0
+                            is_readonly = (type_bytes[0] & 0x80) != 0
+                            
+                            # Extract allocation unit numbers (filter out invalid values)
+                            allocation_units = [b for b in alloc_info if b != 0 and b < 160]
                             
                             entry = {
                                 'offset': i,
                                 'marker': marker,
                                 'name': name,
                                 'type': file_type,
-                                'metadata': meta_bytes.hex(),
+                                'part_number': part_num,
+                                'tail_bytes': tail_bytes,
+                                'size_sectors': file_size_sectors,
+                                'allocation_units': allocation_units,
+                                'is_hidden': is_hidden,
+                                'is_readonly': is_readonly,
                                 'is_directory': file_type == 'DIR',
                                 'is_root': marker == MARKER_ROOT_DIR
                             }
@@ -84,7 +109,11 @@ def scan_directory_area(data, offset, verbose=False):
                             
                             if verbose:
                                 marker_name = {MARKER_ROOT_DIR: 'ROOT', MARKER_SUB_DIR: 'SUBDIR', MARKER_FILE: 'FILE'}
-                                print(f"  0x{i:04x}: [{marker_name.get(marker, f'{marker:02x}')}] {name:12} {file_type}")
+                                flags = []
+                                if is_hidden: flags.append('H')
+                                if is_readonly: flags.append('R')
+                                flag_str = f"[{''.join(flags)}]" if flags else ""
+                                print(f"  0x{i:04x}: [{marker_name.get(marker, f'{marker:02x}')}] {name:12} {file_type} {flag_str} (part:{part_num}, size:{file_size_sectors}, AUs:{len(allocation_units)})")
                     except:
                         pass
     
@@ -112,19 +141,34 @@ def scan_directory_area(data, offset, verbose=False):
                             ext = ext_bytes.decode('ascii').strip()
                             
                             if name and entry_data[0] != 0xE5:  # Skip deleted files
+                                # Enhanced CP/M metadata parsing
+                                extent = entry_data[12]  # Extent number
+                                reserved = entry_data[13:15]  # Reserved bytes
+                                record_count = entry_data[15]  # Records in extent
+                                
+                                # Parse allocation blocks (CP/M style)
+                                allocation_blocks = []
+                                for block_idx in range(16, 32):
+                                    if entry_data[block_idx] != 0 and entry_data[block_idx] < 160:
+                                        allocation_blocks.append(entry_data[block_idx])
+                                
                                 entry = {
                                     'offset': i,
                                     'marker': entry_data[0],
                                     'name': name,
                                     'type': ext,
-                                    'metadata': entry_data[12:].hex(),
+                                    'extent': extent,
+                                    'record_count': record_count,
+                                    'allocation_blocks': allocation_blocks,
                                     'is_directory': False,
-                                    'is_root': True  # CP/M files are considered root level
+                                    'is_root': True,  # CP/M files are considered root level
+                                    'is_hidden': False,
+                                    'is_readonly': False
                                 }
                                 entries.append(entry)
                                 
                                 if verbose:
-                                    print(f"  0x{i:04x}: [CPM] {name:12} {ext}")
+                                    print(f"  0x{i:04x}: [CPM] {name:12} {ext} (ext:{extent}, recs:{record_count}, blocks:{len(allocation_blocks)})")
                         except:
                             pass
     
@@ -156,7 +200,7 @@ def scan_entire_disk(data, verbose=False):
         print(f"\nLooking for contents of directories: {', '.join(root_directories)}")
     
     # Scan every 256-byte boundary for directory structures
-    for offset in range(0x2000, len(data) - 0x200, 0x100):
+    for offset in range(0x100, len(data) - 0x200, 0x100):
         # Skip the root directory area we already scanned
         if offset == ROOT_DIR_OFFSET:
             continue
@@ -176,7 +220,7 @@ def scan_entire_disk(data, verbose=False):
                     directory_match = entry['name']
                     break
             
-            if directory_match or (has_files and len(potential_entries) >= 3):
+            if directory_match or (has_files and len(potential_entries) >= 2 and not any('FGFGFGFG' in e.get('name', '') for e in potential_entries)):
                 if verbose:
                     if directory_match:
                         print(f"\nFound {directory_match} directory contents at 0x{offset:04x}:")
@@ -265,7 +309,19 @@ def display_catalog(tree):
                     print(f"  {entry['name']}/ (subdirectory)")
                 else:
                     ext = f".{entry['type']}" if entry['type'] else ""
-                    print(f"  {entry['name']}{ext}")
+                    flags = []
+                    if entry.get('is_hidden', False): flags.append('H')
+                    if entry.get('is_readonly', False): flags.append('R')
+                    flag_str = f" [{''.join(flags)}]" if flags else ""
+                    
+                    # Show size info if available
+                    size_info = ""
+                    if 'size_sectors' in entry:
+                        size_info = f" ({entry['size_sectors']} sectors)"
+                    elif 'record_count' in entry:
+                        size_info = f" ({entry['record_count']} records)"
+                    
+                    print(f"  {entry['name']}{ext}{flag_str}{size_info}")
             print()
 
 def main():
