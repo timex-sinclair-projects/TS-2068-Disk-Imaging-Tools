@@ -78,16 +78,16 @@ Most Larken and Oliger disks use these configurations:
 
 ```bash
 # Single-sided, 40 tracks (most common)
-gw read --format=img --tracks=c=0-39:h=0 disk.img
+gw read --format=ibm.scan --tracks=c=0-39:h=0 disk.img
 
 # Double-sided, 40 tracks
-gw read --format=img --tracks=c=0-39:h=0-1 disk.img
+gw read --format=ibm.scan --tracks=c=0-39:h=0-1 disk.img
 
 # Single-sided, 42 tracks (if 40-track seems incomplete)
-gw read --format=img --tracks=c=0-41:h=0 disk.img
+gw read --format=ibm.scan --tracks=c=0-41:h=0 disk.img
 
 # Double-sided, 42 tracks
-gw read --format=img --tracks=c=0-41:h=0-1 disk.img
+gw read --format=ibm.scan --tracks=c=0-41:h=0-1 disk.img
 ```
 
 ### Zebra (CPC) Disks
