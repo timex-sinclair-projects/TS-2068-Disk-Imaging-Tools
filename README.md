@@ -58,16 +58,16 @@ Extract from specific formats directly:
 
 ```bash
 # Larken format
-python scripts/LarkenRead_optimized.py -f examples/larken.img
+python scripts/LarkenRead.py -f examples/larken.img
 
-# Oliger format  
-python scripts/OligerRead_optimized.py -f examples/oliger.img
+# Oliger format
+python scripts/OligerRead.py -f examples/oliger.img
 
 # Zebra DIRSCP format
 python scripts/ZebraExtract.py -f examples/zebra.dsk
 
 # Universal analysis (any format)
-python scripts/ZebraRead_universal.py -f examples/zebra.dsk -c
+python scripts/ZebraRead.py -f examples/zebra.dsk -c
 ```
 
 ## Creating Disk Images with Greaseweazle
@@ -109,10 +109,10 @@ gw read --format=ibm.720 disk.dsk
 TS-2068-Disk-Imaging-Tools/
 ├── scripts/                     # Main scripts
 │   ├── DiskImageManager.py      # Main unified interface
-│   ├── LarkenRead_optimized.py  # Larken format extraction
-│   ├── OligerRead_optimized.py  # Oliger format extraction  
+│   ├── LarkenRead.py            # Larken format extraction
+│   ├── OligerRead.py            # Oliger format extraction
 │   ├── ZebraExtract.py          # Zebra DIRSCP extraction
-│   ├── ZebraRead_universal.py   # Universal format analyzer
+│   ├── ZebraRead.py             # Universal format analyzer
 │   ├── archive/                 # Original/legacy scripts
 │   │   ├── LarkenRead.py
 │   │   ├── OligerRead.py
@@ -120,6 +120,10 @@ TS-2068-Disk-Imaging-Tools/
 │   │   └── ZebraRead_enhanced.py
 │   └── test/                    # Test scripts
 │       └── zebra_full_scan.py
+├── docs/                        # Format documentation
+│   ├── LarkenRead.md            # LKDOS disk format & script reference
+│   ├── OligerRead.md            # JLO SAFE disk format & script reference
+│   └── ZebraRead.md             # Zebra DIRSCP/CP/M format & script reference
 ├── examples/                    # Sample disk images
 │   ├── larken.img
 │   ├── oliger.img
@@ -144,28 +148,29 @@ TS-2068-Disk-Imaging-Tools/
 
 ## Technical Details
 
-### Larken Format
-- **Block Size:** 5KB (5120 bytes)
-- **Directory Location:** Byte 188
-- **Markers:** 0xFF (start), 0xFD (block list start), 0xF9 (block list end), 0xFA (directory end)
-- **File Allocation:** Block-based with linked allocation tables
+Detailed disk format documentation and script references are in the [docs/](docs/) folder:
 
-### Oliger Format  
-- **Block Size:** 5KB (5120 bytes)
-- **Directory Location:** 0x600
-- **Entry Size:** 20 bytes per directory entry
-- **File Allocation:** Cylinder-based allocation system
+- **[docs/LarkenRead.md](docs/LarkenRead.md)** - LKDOS disk format: block layout, track map,
+  directory markers, data block headers, file type conventions, TAP output format,
+  and memory dump detection.
+- **[docs/OligerRead.md](docs/OligerRead.md)** - JLO SAFE/Oliger disk format: cylinder
+  interleaving, directory header and entries, file type codes, ABS state saves,
+  TAP output format, and comparison with LKDOS.
+- **[docs/ZebraRead.md](docs/ZebraRead.md)** - Zebra disk format: CPC DSK container,
+  sector interleaving (track skew table), DIRSCP hierarchical directories,
+  CP/M flat directories, and comparison across all three formats.
 
-### Zebra DIRSCP Format
-- **Base Format:** Extended CPC DSK
-- **Directory Marker:** "DIRSCP" at offset 0x2880
-- **Structure:** Hierarchical directory system
-- **Track Size:** Standard CPC track organization
+### Format Summary
 
-### Zebra CP/M Format
-- **Base Format:** Extended CPC DSK  
-- **Structure:** Flat CP/M file system
-- **Compatibility:** Standard CP/M directory entries
+| Feature           | Larken (LKDOS)       | Oliger (JLO SAFE)    | Zebra                 |
+|-------------------|----------------------|----------------------|-----------------------|
+| Image format      | Raw .img             | Raw .img             | Extended CPC .dsk     |
+| Block size        | 5,120 bytes          | 5,120 bytes          | 4,096 bytes           |
+| Sector size       | 512 bytes            | 512 bytes            | 256 bytes             |
+| Directory type    | Marker-delimited     | Fixed 20-byte entries| DIRSCP or CP/M        |
+| Subdirectories    | No                   | No                   | Yes (DIRSCP)          |
+| Output format     | .tap (ZX Spectrum)   | .tap (ZX Spectrum)   | Native binary         |
+| State saves       | 48K memory dumps     | 48.5K ABS saves      | N/A                   |
 
 ## Script Capabilities
 
@@ -174,7 +179,7 @@ TS-2068-Disk-Imaging-Tools/
 The toolkit includes both **analysis** and **extraction** capabilities:
 
 #### Analysis Tools (Catalog Only)
-- **`ZebraRead_universal.py`** - Universal format analyzer
+- **`ZebraRead.py`** - Universal format analyzer
   - 🔍 **Purpose:** Identify disk format and catalog contents
   - ✅ Supports both DIRSCP and CP/M zebra formats
   - ✅ Lists files and directories without extracting
@@ -182,8 +187,8 @@ The toolkit includes both **analysis** and **extraction** capabilities:
   - ❌ **Cannot extract files** (analysis only)
 
 #### Extraction Tools (Get Files)
-- **`LarkenRead_optimized.py`** - Extracts Larken format to TAP files
-- **`OligerRead_optimized.py`** - Extracts Oliger format to TAP files  
+- **`LarkenRead.py`** - Extracts Larken format to TAP files (with CODE file fix and memory dump detection)
+- **`OligerRead.py`** - Extracts Oliger format to TAP files (with CODE file fix and ABS save detection)
 - **`ZebraExtract.py`** - Extracts DIRSCP format to native files
   - 📁 **Purpose:** Actually extract and save files from disk images
   - ✅ Creates filesystem directories matching disk structure
@@ -191,7 +196,7 @@ The toolkit includes both **analysis** and **extraction** capabilities:
   - ⚠️ **DIRSCP format only** (use analyzer first to confirm format)
 
 ### Recommended Workflow
-1. **Analyze first:** `python scripts/ZebraRead_universal.py -f disk.dsk -c`
+1. **Analyze first:** `python scripts/ZebraRead.py -f disk.dsk -c`
 2. **Extract second:** Use appropriate extraction tool based on detected format
 
 ## Command Line Options
@@ -207,7 +212,7 @@ All extraction scripts support these options:
 
 ### View disk catalog without extracting:
 ```bash
-python scripts/LarkenRead_optimized.py -f examples/larken.img -c
+python scripts/LarkenRead.py -f examples/larken.img -c
 ```
 
 ### Extract with verbose output:
@@ -217,7 +222,7 @@ python scripts/ZebraExtract.py -f examples/zebra.dsk -v
 
 ### Analyze unknown format:
 ```bash
-python scripts/ZebraRead_universal.py -f unknown.dsk -c
+python scripts/ZebraRead.py -f unknown.dsk -c
 ```
 
 ## Contributing
@@ -247,7 +252,7 @@ This project is open source. Please see the individual script headers for specif
 If you encounter issues:
 
 1. Check that your disk image was created with compatible Greaseweazle settings
-2. Try the universal analyzer first: `python scripts/ZebraRead_universal.py -f yourfile -c`
+2. Try the universal analyzer first: `python scripts/ZebraRead.py -f yourfile -c`
 3. Verify the disk image isn't corrupted by checking file size and headers
 4. Open an issue with details about your disk image and error messages
 
