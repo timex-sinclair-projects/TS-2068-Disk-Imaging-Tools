@@ -45,6 +45,15 @@ Filenames are sanitized for the host filesystem. Characters outside
 `[A-Za-z0-9~ -_.]` are stripped. The original filename is preserved inside the
 TAP header.
 
+When two or more files on the disk share the same name, the second and subsequent
+files receive a numeric suffix: `prog.B1.tap`, `prog.B1_2.tap`, etc.
+
+- **`manifest.md`** - A Markdown file written to the output directory after
+  extraction. It records the disk metadata (format, sides, tracks) and a table
+  mapping each original disk filename to its extracted filename(s), file type, and
+  size. This is especially useful when filenames were sanitized or de-duplicated,
+  since the manifest preserves the link back to the original disk contents.
+
 ## Memory Dump Detection
 
 Files are classified as memory dumps when all three conditions are met:
@@ -251,3 +260,8 @@ Byte  N+1:   XOR checksum of bytes 2-N
    replaces null padding with spaces in TAP output.
 5. **Memory dump detection**: Identifies full-memory state captures and saves them
    as `.dump` (raw) + `.tap` (BASIC loader + CODE block).
+6. **Duplicate filename handling**: Files that share the same disk filename are
+   written with a `_2`, `_3`, etc. suffix instead of silently overwriting.
+7. **Extraction manifest**: A `manifest.md` file is written to the output
+   directory listing disk metadata and a table mapping every original disk
+   filename to its extracted filename(s).

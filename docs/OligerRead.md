@@ -46,6 +46,17 @@ Filenames are sanitized for the host filesystem. Characters outside
 `[A-Za-z0-9~ -_.]` are stripped (e.g., `L/Print` becomes `LPrint`, `M*5` becomes
 `M5`). The original filename is preserved inside the TAP header.
 
+When two or more files on the disk share the same name (e.g., a BASIC loader and
+its CODE companion both called `mscript5.5`), the second and subsequent files
+receive a numeric suffix: `mscript5.5.tap`, `mscript5.5_2.tap`, etc.
+
+- **`manifest.md`** - A Markdown file written to the output directory after
+  extraction. It records the disk metadata (format, disk name, sides, tracks) and
+  a table mapping each original disk filename to its extracted filename(s), file
+  type, and size. This is especially useful when filenames were sanitized or
+  de-duplicated, since the manifest preserves the link back to the original disk
+  contents.
+
 ## ABS State Save Detection
 
 Files are classified as ABS (absolute) state saves when all conditions are met:
@@ -273,3 +284,8 @@ Byte  N+1:   XOR checksum of bytes 2-N
    flags ABS state saves.
 5. **Disk metadata display**: Shows disk name, total/available cylinders from the
    directory header.
+6. **Duplicate filename handling**: Files that share the same disk filename are
+   written with a `_2`, `_3`, etc. suffix instead of silently overwriting.
+7. **Extraction manifest**: A `manifest.md` file is written to the output
+   directory listing disk metadata and a table mapping every original disk
+   filename to its extracted filename(s).

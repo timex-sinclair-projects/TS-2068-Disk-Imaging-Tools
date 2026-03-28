@@ -39,6 +39,20 @@ def make_safe_filename(input_filename):
     safechars = string.ascii_letters + string.digits + "~ -_."
     return "".join(c for c in input_filename if c in safechars)
 
+def unique_path(filepath):
+    """Return filepath with a numeric suffix if it already exists.
+
+    Given 'dir/foo.tap', returns 'dir/foo.tap' if it doesn't exist,
+    otherwise 'dir/foo_2.tap', 'dir/foo_3.tap', etc.
+    """
+    if not os.path.exists(filepath):
+        return filepath
+    base, ext = os.path.splitext(filepath)
+    counter = 2
+    while os.path.exists(f"{base}_{counter}{ext}"):
+        counter += 1
+    return f"{base}_{counter}{ext}"
+
 def calculate_cylinder_number(cylinder_bytes):
     """Calculate cylinder number from directory entry bytes.
 
@@ -240,7 +254,8 @@ def write_abs_dump(output_path, file_data):
         dump_content = file_data["fileContent"]
 
         # Write raw dump
-        with open(safe_filename + ".dump", "wb") as f:
+        dump_path = unique_path(safe_filename + ".dump")
+        with open(dump_path, "wb") as f:
             f.write(dump_content)
 
         # Build a launchable TAP file
@@ -272,17 +287,21 @@ def write_abs_dump(output_path, file_data):
         tap_data = (basic_header_block + basic_data_block +
                    code_header_block + code_data_block)
 
-        with open(safe_filename + ".tap", "wb") as f:
+        tap_path = unique_path(safe_filename + ".tap")
+        with open(tap_path, "wb") as f:
             f.write(tap_data)
 
-        print(f"  -> Saved memory dump: {safe_filename}.dump "
+        print(f"  -> Saved memory dump: {dump_path} "
               f"({file_data['filesize']} bytes, origin=0x{ABS_SAVE_START:04X})")
-        print(f"  -> Saved launcher:    {safe_filename}.tap "
+        print(f"  -> Saved launcher:    {tap_path} "
               f"(CLEAR {clear_addr}, LOAD CODE at 0x{code_start:04X}, "
               f"USR {entry_addr})")
 
+        return [dump_path, tap_path]
+
     except Exception as e:
         print(f"Error writing dump file: {e}")
+        return []
 
 def write_tap_file(output_path, file_data):
     """Write file data in TAP format"""
@@ -338,13 +357,17 @@ def write_tap_file(output_path, file_data):
             if output_path:
                 safe_filename = os.path.join(output_path, safe_filename)
 
-            with open(safe_filename + ".tap", "wb") as f:
+            tap_path = unique_path(safe_filename + ".tap")
+            with open(tap_path, "wb") as f:
                 f.write(tap_data)
+            return [tap_path]
         else:
             print(f"Unsafe filename: {filename}")
+            return []
 
     except Exception as e:
         print(f"Error writing TAP file: {e}")
+        return []
 
 def log_bad_file(filename, message):
     """Log problematic files"""
@@ -359,6 +382,38 @@ def get_file_type_name(type_code):
     if 0 <= type_code < len(FILE_TYPE_NAMES):
         return FILE_TYPE_NAMES[type_code]
     return f"Unknown ({type_code})"
+
+def write_manifest(output_path, img_path, disk_info, extracted_files):
+    """Write a markdown manifest describing the disk contents and extracted files."""
+    manifest_path = os.path.join(output_path, "manifest.md") if output_path else "manifest.md"
+    img_name = os.path.basename(img_path)
+
+    with open(manifest_path, "w") as f:
+        f.write(f"# {img_name}\n\n")
+        f.write("## Disk Information\n\n")
+        f.write(f"- **Format:** Oliger (JLO SAFE)\n")
+        if disk_info.get("disk_name"):
+            f.write(f"- **Disk name:** {disk_info['disk_name']}\n")
+        f.write(f"- **Sides:** {disk_info['sides']}\n")
+        f.write(f"- **Tracks:** {disk_info['tracks']}\n")
+        f.write(f"- **Total cylinders:** {disk_info['total_cylinders']}\n")
+        f.write(f"- **Source image:** {img_name}\n")
+        f.write("\n")
+
+        f.write("## Extracted Files\n\n")
+        f.write("| # | Disk Filename | Type | Size | Extracted As |\n")
+        f.write("|---|---------------|------|------|--------------|\n")
+        for i, (entry, paths) in enumerate(extracted_files, 1):
+            orig = entry["filename"].rstrip()
+            kind = get_file_type_name(entry["filetype"])
+            size = entry["filesize"]
+            if paths:
+                names = ", ".join(os.path.basename(p) for p in paths)
+            else:
+                names = "*(failed)*"
+            f.write(f"| {i} | {orig} | {kind} | {size} | {names} |\n")
+
+    print(f"Manifest written to {manifest_path}")
 
 def main():
     args = parse_arguments()
@@ -400,6 +455,19 @@ def main():
         print(f"Error creating directory: {e}")
         output_path = ''
 
+    # Read disk info for manifest
+    with open(args.imgfile, 'rb') as f:
+        first_block = f.read(BLOCK_SIZE)
+    dir_header = first_block[DIR_OFFSET:DIR_OFFSET + DIR_HEADER_SIZE]
+    disk_info = {
+        "tracks": dir_header[0],
+        "sides": dir_header[1],
+        "total_cylinders": dir_header[2],
+        "disk_name": dir_header[16:32].decode('ascii', errors='ignore').rstrip(),
+    }
+
+    extracted_files = []
+
     # Process files
     if args.specific:
         # Extract specific file
@@ -408,11 +476,13 @@ def main():
             if entry["filename"].rstrip() == args.specific.rstrip():
                 print(f"Extracting: {entry['filename']}")
                 file_data = read_file_data(args.imgfile, entry)
+                paths = []
                 if file_data:
                     if is_abs_state_save(file_data):
-                        write_abs_dump(output_path, file_data)
+                        paths = write_abs_dump(output_path, file_data)
                     else:
-                        write_tap_file(output_path, file_data)
+                        paths = write_tap_file(output_path, file_data)
+                extracted_files.append((entry, paths))
                 found = True
                 break
 
@@ -423,11 +493,16 @@ def main():
         for entry in catalog:
             print(f"Extracting: {entry['filename']}")
             file_data = read_file_data(args.imgfile, entry)
+            paths = []
             if file_data:
                 if is_abs_state_save(file_data):
-                    write_abs_dump(output_path, file_data)
+                    paths = write_abs_dump(output_path, file_data)
                 else:
-                    write_tap_file(output_path, file_data)
+                    paths = write_tap_file(output_path, file_data)
+            extracted_files.append((entry, paths))
+
+    if extracted_files:
+        write_manifest(output_path, args.imgfile, disk_info, extracted_files)
 
 if __name__ == "__main__":
     main()
