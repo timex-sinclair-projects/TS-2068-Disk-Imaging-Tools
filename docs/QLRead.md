@@ -143,34 +143,37 @@ The allocation map begins at byte 0x60 in logical sector 0 and uses **3 bytes
 per group** for 240 entries (720 bytes total). Each entry encodes which file owns
 the group and the block's sequence number within that file.
 
-**Entry format** (3 bytes, big-endian):
+**Entry format** (3 bytes, encoding a 12-bit file number and 12-bit block
+sequence):
 
-| Byte | Description                                         |
-|------|-----------------------------------------------------|
-| 0    | Status: 0x00 = allocated, 0xF8 = header, 0xFD = system/EOF |
-| 1    | High nibble: file ID (1-15); Low nibble: block sequence high 4 bits |
-| 2    | Block sequence low 8 bits                           |
-
-Special entry values:
-- `F8 00 00` - Disk header (group 0)
-- `00 00 00` - Map/system area
-- `FD FF FF` - Reserved / end-of-file (system groups)
-- `30 30 30` - Free (formatted empty)
-
-For allocated entries (byte 0 = 0x00):
 ```
-file_id    = byte1 >> 4          (range: 1-15)
-block_seq  = (byte1 & 0xF) << 8 | byte2
+file_num  = (byte0 << 4) | (byte1 >> 4)     # 12 bits
+block_seq = ((byte1 & 0x0F) << 8) | byte2   # 12 bits
 ```
 
-The `file_id` in the map corresponds to the directory entry's `fileno` field
-minus 1 (i.e., `map_file_id = directory_fileno - 1`).
+| Bits      | Field        | Description                              |
+|-----------|--------------|------------------------------------------|
+| byte0:7-0 + byte1:7-4 | file_num | 12-bit file number (0-4095) |
+| byte1:3-0 + byte2:7-0 | block_seq | 12-bit block sequence (0-4095) |
 
-### Directory (Groups 3-5)
+Special entry values (identified by byte 0):
+- `F8 xx xx` - Disk header (group 0)
+- `FD xx xx` - Reserved / system / directory group
+- `FE xx xx` - Free (unallocated)
+- `FF xx xx` - Bad sector
+- Uniform fill (e.g. `30 30 30`) - Free (formatted empty)
 
-The directory occupies up to 3 system groups (4,608 bytes), starting at group 3
-(logical sector 18). It begins with a 64-byte header (typically empty/formatted)
-followed by 64-byte file entries.
+For standard allocated entries, byte 0 is in the range 0x00-0xEF. The file
+number in the map corresponds to the directory entry's `fileno` field minus 1
+(i.e., `map_file_num = directory_fileno - 1`).
+
+### Directory (Groups 3+)
+
+The directory starts at group 3 (logical sector 18). The number of groups it
+occupies depends on the `dir_entries` count in the header — for a standard
+64-entry directory, 3 groups (4,608 bytes) suffice; larger directories (e.g.
+192 entries) require up to 9 groups. The directory begins with a 64-byte header
+(typically empty/formatted) followed by 64-byte file entries.
 
 **Directory entry format** (64 bytes, all multi-byte values big-endian):
 
@@ -229,11 +232,19 @@ To extract a file:
 
 ## Known Limitations
 
-- **C68d1_zip under-allocation**: On the PD1 disk image tested, the file
-  `C68d1_zip` declares a length of 308,915 bytes but only has 2 groups allocated
-  (3,072 bytes). This may indicate a multi-disk archive where only a stub entry
-  exists on this disk, or a corrupted directory entry. The script extracts
-  whatever data is available and prints a warning.
+- **Allocation map sector boundary**: The allocation map spans multiple
+  interleaved logical sectors within group 0.  Files whose map entries fall
+  entirely within the first physical sector (~138 entries) extract reliably.
+  Files whose entries land in subsequent interleaved sectors may fail to extract
+  because the raw image byte offsets do not correspond to contiguous logical map
+  data.  This affects disks with many files or very large files that push
+  allocations past group 138.  The catalog display (`-c`) is unaffected — only
+  extraction depends on the map.
+
+- **Truncated files**: Some files (e.g., `C68d1_zip` on PD1) declare a length
+  far exceeding their allocated groups.  This may indicate multi-disk archives
+  where only a stub entry exists on this disk, or a corrupted directory entry.
+  The script extracts whatever data is available and prints a warning.
 
 - **Space-named files**: Files with names consisting only of whitespace are
   skipped with a warning, since they cannot be represented as filenames on the
@@ -242,3 +253,16 @@ To extract a file:
 - **QL5B (HD) format**: The script parses QL5B headers but has only been tested
   with QL5A (double-density) images. High-density disks may use different
   geometry or group sizes.
+
+## Changes from QLRead.py
+
+1. **12-bit file number parsing**: The allocation map entry format now correctly
+   extracts a 12-bit file number spanning bytes 0 and 1 (`(b0 << 4) | (b1 >> 4)`)
+   rather than using only the top nibble of byte 1. This allows file numbers
+   above 15.
+2. **Dynamic directory size**: The directory reader now calculates the number of
+   groups needed from the header's `dir_entries` field, rather than hardcoding
+   groups 3-5. Disks with 192 or 256 directory entries now parse correctly.
+3. **Free-fill pattern detection**: Map entries with uniform fill bytes (e.g.,
+   `0x30 0x30 0x30`) are now correctly identified as free space rather than
+   allocated.

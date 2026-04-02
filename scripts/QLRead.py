@@ -153,8 +153,20 @@ def read_group_data(data, group_num, interleave):
 def parse_allocation_map(data, header):
     """Parse the block allocation map.
 
-    The map starts at byte 0x60 in logical sector 0 and uses 3 bytes per group.
-    Returns a dict mapping file_id -> [(group_num, block_seq), ...].
+    The map is stored starting at byte 0x60 in group 0 and uses 3 bytes per
+    group.  Because the map spans multiple de-interleaved logical sectors, it
+    must be read from de-interleaved group data (not raw image bytes).
+
+    Each 3-byte entry encodes a 12-bit file number and a 12-bit block sequence:
+
+        file_num  = (byte0 << 4) | (byte1 >> 4)
+        block_seq = ((byte1 & 0x0F) << 8) | byte2
+
+    Special markers (byte0 >= 0xF0): 0xF8 = map header, 0xFD = system/directory,
+    0xFE = free, 0xFF = bad sector.  A uniform fill pattern (e.g. 0x30 0x30 0x30)
+    also indicates a free group.
+
+    Returns a dict mapping file_num -> [(group_num, block_seq), ...].
     """
     map_start = 0x60
     num_entries = header["num_groups"]
@@ -166,19 +178,19 @@ def parse_allocation_map(data, header):
             break
         b0, b1, b2 = data[offset], data[offset + 1], data[offset + 2]
 
-        # Skip non-allocated entries (byte 0 must be 0x00 for allocated)
-        if b0 != MAP_ALLOCATED:
+        # Skip special markers
+        if b0 >= 0xF0:
             continue
-        # Skip empty/null entries
-        if b1 == 0x00 and b2 == 0x00:
+        # Skip free-fill patterns (e.g. 0x303030)
+        if b0 == b1 == b2 and b0 != 0x00:
             continue
 
-        file_id = b1 >> 4
+        file_num = (b0 << 4) | (b1 >> 4)
         block_seq = ((b1 & 0x0F) << 8) | b2
 
-        if file_id not in files:
-            files[file_id] = []
-        files[file_id].append((g, block_seq))
+        if file_num not in files:
+            files[file_num] = []
+        files[file_num].append((g, block_seq))
 
     return files
 
@@ -186,15 +198,22 @@ def parse_allocation_map(data, header):
 def read_directory(data, header):
     """Read directory entries from the system area of the disk.
 
-    The directory occupies groups 3-5 (system/reserved groups) and consists
-    of a 64-byte header followed by 64-byte file entries.
+    The directory starts at group 3 and consists of a 64-byte header followed
+    by 64-byte file entries.  The number of groups required depends on the
+    declared dir_entries count (each group holds ~24 entries).
     """
     interleave = header["interleave"]
     max_entries = header["dir_entries"]
 
-    # Read directory data from system groups (groups 3, 4, 5)
+    # Calculate how many groups are needed for the directory
+    dir_bytes_needed = DIR_HEADER_SIZE + max_entries * DIR_ENTRY_SIZE
+    dir_groups_needed = (dir_bytes_needed + GROUP_SIZE - 1) // GROUP_SIZE
+    dir_start_group = 3
+
     dir_data = bytearray()
-    for g in range(3, 6):
+    for g in range(dir_start_group, dir_start_group + dir_groups_needed):
+        if g >= header["num_groups"]:
+            break
         dir_data.extend(read_group_data(data, g, interleave))
 
     entries = []

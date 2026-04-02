@@ -1,61 +1,42 @@
-# Zebra Disk Image Tools
+# ZebraRead.py - Zebra CPC DSK Disk Image Extractor
 
 ## Overview
 
-Two scripts handle Zebra-format disk images for the Timex/Sinclair 2068:
+`ZebraRead.py` analyzes and extracts files from Zebra-format disk images for the
+Timex/Sinclair 2068. It handles both **DIRSCP** (hierarchical) and **CP/M**
+(flat) directory structures, auto-detecting which is present. DIRSCP disks
+support full file extraction; CP/M disks support catalog display.
 
-- **`ZebraExtract.py`** - Extracts files from DIRSCP-format Zebra disks,
-  preserving the hierarchical directory structure and saving files in their
-  native format.
+Unlike the Larken and Oliger scripts, ZebraRead does **not** convert files to TAP
+format. Zebra disks use a CP/M-derived filesystem rather than the ZX Spectrum
+tape-style file model, so files are extracted in their native format.
 
-- **`ZebraRead.py`** - Universal analyzer/scanner for CPC DSK format
-  disk images. Handles both DIRSCP (hierarchical) and CP/M (flat) directory
-  structures. Analysis only -- does not extract files.
-
-Unlike the Larken and Oliger scripts, the Zebra tools do **not** convert files
-to TAP format. Zebra disks use a CP/M-derived filesystem rather than the
-ZX Spectrum tape-style file model, so files are extracted in their native format.
-
----
-
-## ZebraExtract.py
-
-### Usage
+## Usage
 
 ```
-python3 ZebraExtract.py -f <dsk_file> [-c] [-o <output_dir>] [-v]
+python3 ZebraRead.py -f <dsk_file> [-c] [-s <filename>] [-o <output_dir>] [-v]
 ```
 
 **Arguments:**
 - `-f`, `--imgfile` - Path to the Zebra .dsk disk image file (required)
 - `-c`, `--cat` - Display the disk catalog without extracting files
+- `-s`, `--specific` - Extract only the named file
 - `-o`, `--outdir` - Output directory (default: filename without extension)
-- `-v`, `--verbose` - Show detailed sector-level read operations
+- `-v`, `--verbose` - Show detailed scanning and sector-level operations
 
 **Examples:**
 ```
-python3 ZebraExtract.py -f zebra.dsk -c            # Show catalog
-python3 ZebraExtract.py -f zebra.dsk                # Extract all files
-python3 ZebraExtract.py -f zebra.dsk -o output -v   # Extract with verbose output
+python3 ZebraRead.py -f zebra.dsk -c              # Show catalog
+python3 ZebraRead.py -f zebra.dsk                  # Extract all files (DIRSCP)
+python3 ZebraRead.py -f zebra.dsk -s "LETTER"      # Extract one file
+python3 ZebraRead.py -f zebra3.dsk -c              # Catalog CP/M disk
+python3 ZebraRead.py -f zebra.dsk -o output -v     # Extract with verbose output
 ```
 
-### What It Does
+## Output
 
-1. Validates that the image is an Extended CPC DSK file with a DIRSCP directory.
-2. Reads the root directory at offset 0x2880, identifying subdirectories and
-   root-level files.
-3. For each subdirectory, scans the disk to locate the directory's file listings.
-4. Extracts file data by reading the allocation units (tracks) listed in each
-   directory entry, applying sector interleaving (track skew) to reconstruct
-   the correct byte order.
-5. Trims trailing padding bytes (0x00, 0xFF, 0xE5, 0x1A) from extracted files.
-6. Creates a host filesystem directory tree mirroring the disk's hierarchy.
-
-### Output
-
-Files are saved in their native binary format, organized in subdirectories
-matching the disk structure. For example, a disk with a `ZEBRA/` directory
-containing `LETTER.TXT` produces:
+Extracted files are saved as raw binary with their original filenames (sanitized
+for the host filesystem). The disk's subdirectory structure is preserved:
 
 ```
 output/
@@ -65,68 +46,25 @@ output/
     ...
   CH_A.SCP
   CH_B.SCP
+  manifest.md
 ```
 
-### Limitations
+When two or more files share the same name, the second and subsequent files
+receive a numeric suffix: `file`, `file_2`, `file_3`, etc.
 
-- Only supports DIRSCP format disks. For CP/M format disks, use
-  `ZebraRead.py` to analyze the contents first.
-- Some directory entries may not be found if they are located at non-standard
-  offsets within the disk image.
-- File size trimming uses heuristic padding detection, which may not be exact
-  for all file types.
+- **`manifest.md`** - A Markdown file listing disk metadata and a table mapping
+  each original filename to its extracted filename and size.
 
----
+## Two Format Modes
 
-## ZebraRead.py
+**DIRSCP Format:** Detected when "DIRSCP" is found at offset 0x2880. Supports
+hierarchical directories and full file extraction. Uses marker-based directory
+entries (0xFF=root, 0x80=subdir, 0x01=file) with 8-character filenames +
+3-character extensions.
 
-### Usage
-
-```
-python3 ZebraRead.py -f <dsk_file> [-c] [-v]
-```
-
-**Arguments:**
-- `-f`, `--imgfile` - Path to the .dsk disk image file (required)
-- `-c`, `--cat` - Display the disk catalog in a structured tree format
-- `-v`, `--verbose` - Show detailed scanning information including byte offsets
-
-**Examples:**
-```
-python3 ZebraRead.py -f zebra.dsk -c       # Catalog DIRSCP disk
-python3 ZebraRead.py -f zebra3.dsk -c       # Catalog CP/M disk
-python3 ZebraRead.py -f unknown.dsk -c -v   # Verbose analysis
-```
-
-### What It Does
-
-1. Reads the CPC DSK header to extract disk metadata (creator, tracks, sides).
-2. Scans the root directory area (0x2880) for DIRSCP-style entries.
-3. If no DIRSCP entries are found, falls back to CP/M-style directory parsing
-   (32-byte fixed entries with user number, 8.3 filename, extent info).
-4. Scans every 256-byte boundary across the entire disk to find additional
-   directory structures and file clusters.
-5. Builds a hierarchical directory tree from all discovered entries.
-6. Displays the catalog with file attributes (hidden, read-only), sizes, and
-   directory organization.
-
-### Two Format Modes
-
-**DIRSCP Format:** Detected when "DIRSCP" is found at offset 0x2880. Uses
-marker-based directory entries (0xFF=root, 0x80=subdir, 0x01=file) with
-8-character filenames + 3-character extensions.
-
-**CP/M Format:** Fallback when no DIRSCP marker is found. Uses standard CP/M
-directory entries (32 bytes each) with user numbers, extents, and record counts.
-This is used for disks like zebra3.dsk which contain CP/M programs (WordStar,
-MBASIC, ZSID, etc.).
-
-### Limitations
-
-- Analysis and catalog only -- does not extract files. Use `ZebraExtract.py`
-  for DIRSCP extraction.
-- The full-disk scan may produce duplicate entries when the same directory
-  structure is found at multiple offsets (due to the scanning heuristic).
+**CP/M Format:** Fallback when no DIRSCP marker is found. Supports catalog
+display only (extraction not implemented). Uses standard CP/M directory entries
+(32 bytes each) with user numbers, extents, and record counts.
 
 ---
 
@@ -197,10 +135,9 @@ Physical:  0   7  14   5  12   3  10   1   8  15   6  13   4  11   2   9
 ```
 
 When reading file data, sectors must be read in the skewed order to reconstruct
-the correct byte sequence. The `ZebraExtract.py` script applies this skew
-automatically. If the skewed read produces all-zero data (suggesting the skew
-table doesn't apply to this particular disk), it falls back to sequential
-sector reading.
+the correct byte sequence. If the skewed read produces all-zero data (suggesting
+the skew table doesn't apply to this particular disk), the script falls back to
+sequential sector reading.
 
 ### DIRSCP Directory Format
 
@@ -248,9 +185,9 @@ of 0 or >= 160 are filtered out as invalid.
 #### Subdirectory Structure
 
 Directories listed in the root (with type `"DIR"`) have their contents stored
-elsewhere on the disk. The extractor scans from offset 0x3000 onward, looking
-for 32-byte entries that match the directory name. Subdirectory content areas
-contain their own set of file entries using the same 32-byte format.
+elsewhere on the disk. The script scans from offset 0x3000 onward, looking for
+32-byte entries that match the directory name. Subdirectory content areas contain
+their own set of file entries using the same 32-byte format.
 
 ### CP/M Directory Format
 
@@ -284,19 +221,7 @@ is the sum of all extents' record counts times 128 bytes.
 | Entry size           | 32 bytes (variable position)    | 32 bytes (fixed 32-byte intervals) |
 | File attributes      | Hidden, read-only in extension  | Standard CP/M attributes           |
 | Typical contents     | TS-2068 programs, documents     | CP/M programs (WordStar, MBASIC)   |
-| Extraction tool      | `ZebraExtract.py`               | Not yet supported for extraction   |
-
-## Recommended Workflow
-
-1. **Identify format**: Run `ZebraRead.py -f disk.dsk -c` to determine
-   whether the disk is DIRSCP or CP/M format and see the file listing.
-
-2. **Extract files**: If DIRSCP, use `ZebraExtract.py -f disk.dsk` to extract.
-   For CP/M disks, extraction is not yet supported by these tools; use a
-   general-purpose CP/M disk utility.
-
-3. **Inspect results**: Check the output directory for extracted files. Use `-v`
-   flag for troubleshooting if files appear corrupted.
+| Extraction support   | Full                            | Catalog only                       |
 
 ---
 
@@ -313,3 +238,16 @@ is the sum of all extents' record counts times 128 bytes.
 | File type storage    | Filename extension   | Directory field       | Directory field           |
 | Output format        | TAP (tape emulation) | TAP (tape emulation)  | Native (raw binary)      |
 | Sector interleaving  | None in image        | None in image         | 16-sector skew table     |
+
+## Changes from ZebraExtract.py / ZebraRead.py
+
+1. **Combined into single script**: The separate `ZebraExtract.py` (extraction
+   only) and `ZebraRead.py` (analysis only) have been merged into a unified
+   `ZebraRead.py` that handles both catalog display and file extraction, matching
+   the interface pattern of the other tools (LarkenRead, OligerRead, QLRead).
+2. **Auto-format detection**: Automatically detects DIRSCP vs CP/M and handles
+   each appropriately.
+3. **Specific file extraction**: Added `-s` flag to extract a single file by
+   name.
+4. **Extraction manifest**: Writes a `manifest.md` to the output directory.
+5. **Duplicate filename handling**: Uses `_2`, `_3` suffixes for collisions.

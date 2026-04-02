@@ -9,7 +9,7 @@ A comprehensive Python toolkit for analyzing and extracting files from TS-2068 c
 - **Oliger Format V1** (.img files) - 5KB fixed file slots, no catalog, load-by-number
 - **Zebra DIRSCP Format** (.dsk files) - CPC DSK format with hierarchical directory system
 - **Zebra CP/M Format** (.dsk files) - CPC DSK format with flat CP/M file system
-- **Sinclair QL Format** (.img files) - QDOS QL5A/QL5B floppy disk images
+- **Sinclair QL Format** (.img files) - QDOS QL5A/QL5B floppy disk images (catalog fully supported; extraction partial — see docs)
 
 ## Features
 
@@ -65,14 +65,11 @@ python scripts/LarkenRead.py -f examples/larken.img
 # Oliger format (auto-detects V1 and V2)
 python scripts/OligerRead.py -f examples/oliger.img
 
-# Zebra DIRSCP format
-python scripts/ZebraExtract.py -f examples/zebra.dsk
+# Zebra format (auto-detects DIRSCP / CP/M)
+python scripts/ZebraRead.py -f examples/zebra.dsk
 
 # Sinclair QL format
 python scripts/QLRead.py -f ql_disk.img
-
-# Universal analysis (any format)
-python scripts/ZebraRead.py -f examples/zebra.dsk -c
 ```
 
 ## Creating Disk Images with Greaseweazle
@@ -117,11 +114,11 @@ TS-2068-Disk-Imaging-Tools/
 │   ├── LarkenRead.py            # Larken format extraction
 │   ├── OligerRead.py            # Oliger V1/V2 format extraction
 │   ├── QLRead.py                # Sinclair QL format extraction
-│   ├── ZebraExtract.py          # Zebra DIRSCP extraction
-│   ├── ZebraRead.py             # Universal format analyzer
+│   ├── ZebraRead.py             # Zebra DIRSCP/CP/M analysis & extraction
 │   ├── archive/                 # Original/legacy scripts
 │   │   ├── LarkenRead.py
 │   │   ├── OligerRead.py
+│   │   ├── ZebraExtract.py
 │   │   ├── ZebraRead.py
 │   │   └── ZebraRead_enhanced.py
 │   └── test/                    # Test scripts
@@ -170,11 +167,11 @@ Detailed disk format documentation and script references are in the [docs/](docs
   V1 fixed-slot format, boot BASIC parsing, heuristic type detection; TAP output
   format, and comparison with LKDOS.
 - **[docs/QLRead.md](docs/QLRead.md)** - Sinclair QL QDOS disk format: QL5A/QL5B layout,
-  sector de-interleaving, block allocation map, directory structure, and file
-  types.
+  sector de-interleaving, 12-bit allocation map encoding, dynamic directory
+  sizing, file types, and known limitations.
 - **[docs/ZebraRead.md](docs/ZebraRead.md)** - Zebra disk format: CPC DSK container,
   sector interleaving (track skew table), DIRSCP hierarchical directories,
-  CP/M flat directories, and comparison across all three formats.
+  CP/M flat directories, extraction details, and comparison across formats.
 
 ### Format Summary
 
@@ -194,27 +191,15 @@ Detailed disk format documentation and script references are in the [docs/](docs
 
 The toolkit includes both **analysis** and **extraction** capabilities:
 
-#### Analysis Tools (Catalog Only)
-- **`ZebraRead.py`** - Universal format analyzer
-  - 🔍 **Purpose:** Identify disk format and catalog contents
-  - ✅ Supports both DIRSCP and CP/M zebra formats
-  - ✅ Lists files and directories without extracting
-  - ✅ Format detection and validation
-  - ❌ **Cannot extract files** (analysis only)
-
-#### Extraction Tools (Get Files)
+#### Extraction Tools
 - **`LarkenRead.py`** - Extracts Larken format to TAP files (with CODE file fix and memory dump detection)
 - **`OligerRead.py`** - Extracts Oliger format to TAP files (auto-detects V1/V2; V2 has CODE file fix and ABS save detection; V1 uses heuristic type detection)
-- **`QLRead.py`** - Extracts Sinclair QL QDOS files as raw binary (with sector de-interleaving)
-- **`ZebraExtract.py`** - Extracts DIRSCP format to native files
-  - 📁 **Purpose:** Actually extract and save files from disk images
-  - ✅ Creates filesystem directories matching disk structure
-  - ✅ Writes files in their native format
-  - ⚠️ **DIRSCP format only** (use analyzer first to confirm format)
+- **`QLRead.py`** - Extracts Sinclair QL QDOS files as raw binary (with sector de-interleaving; catalog display works fully, extraction may be incomplete for files whose map entries span interleaved sectors)
+- **`ZebraRead.py`** - Analyzes and extracts Zebra CPC DSK files (auto-detects DIRSCP/CP/M; DIRSCP supports full extraction with directory hierarchy; CP/M supports catalog display)
 
 ### Recommended Workflow
-1. **Analyze first:** `python scripts/ZebraRead.py -f disk.dsk -c`
-2. **Extract second:** Use appropriate extraction tool based on detected format
+1. **Catalog first:** Use `-c` flag with the appropriate script to view disk contents
+2. **Extract:** Run the same script without `-c` to extract files
 
 ## Command Line Options
 
@@ -230,16 +215,19 @@ All extraction scripts support these options:
 ### View disk catalog without extracting:
 ```bash
 python scripts/LarkenRead.py -f examples/larken.img -c
+python scripts/ZebraRead.py -f examples/zebra.dsk -c
+python scripts/QLRead.py -f examples/ql-pd/PD1.img -c
 ```
 
-### Extract with verbose output:
+### Extract all files:
 ```bash
-python scripts/ZebraExtract.py -f examples/zebra.dsk -v
+python scripts/OligerRead.py -f examples/oliger.img
+python scripts/ZebraRead.py -f examples/zebra.dsk
 ```
 
-### Analyze unknown format:
+### Extract a specific file:
 ```bash
-python scripts/ZebraRead.py -f unknown.dsk -c
+python scripts/ZebraRead.py -f examples/zebra.dsk -s "LETTER"
 ```
 
 ## Contributing
