@@ -4,9 +4,10 @@ DiskImageManager.py - Terminal-based front-end for TS-2068 Disk Imaging Tools
 
 Provides a unified interface for:
 - Larken format disks (.img files)
-- Oliger format disks (.img files) 
+- Oliger format disks (.img files, V1 and V2)
 - Zebra DIRSCP format disks (.dsk files)
 - Zebra CP/M format disks (.dsk files)
+- Sinclair QL format disks (.img files)
 """
 
 import os
@@ -71,7 +72,7 @@ class DiskImageManager:
         
         if not self.available_files:
             print("No disk image files found in current directory.")
-            print("Supported formats: .img (Larken/Oliger), .dsk (Zebra)")
+            print("Supported formats: .img (Larken/Oliger/QL), .dsk (Zebra)")
             print()
             input("Press Enter to continue...")
             return
@@ -106,9 +107,8 @@ class DiskImageManager:
         try:
             with open(filepath, 'rb') as f:
                 header = f.read(32)
-                
+
             if header.startswith(b"EXTENDED CPC DSK"):
-                # Check if it's DIRSCP or CP/M
                 with open(filepath, 'rb') as f:
                     f.seek(0x2880)
                     dir_marker = f.read(6)
@@ -116,54 +116,45 @@ class DiskImageManager:
                         return "[Zebra DIRSCP]"
                     else:
                         return "[Zebra CP/M]"
-            elif filepath.lower().endswith('.img'):
-                # Enhanced detection for Larken vs Oliger formats
+
+            if header[:4] in (b"QL5A", b"QL5B"):
+                return "[Sinclair QL]"
+
+            if filepath.lower().endswith('.img'):
                 with open(filepath, 'rb') as f:
-                    # Read enough data to check both formats
-                    f.seek(0)
-                    data = f.read(0x700)  # Read up to 1792 bytes
-                    
-                    # Check for Larken format characteristics
-                    # Larken: Directory starts at offset 0xBC (188) with 0xFF marker
-                    if len(data) > 0xBC and data[0xBC] == 0xFF:
-                        # Additional validation: check for typical Larken patterns
-                        # Larken uses 0xFD for block list start, 0xF9 for end
-                        larken_markers = 0
-                        for i in range(0xBC, min(len(data), 0x200)):
-                            if data[i] in [0xFF, 0xFD, 0xF9, 0xFA, 0xFE]:
-                                larken_markers += 1
-                        
-                        if larken_markers > 3:
-                            return "[Larken]"
-                    
-                    # Check for Oliger format characteristics
-                    # Oliger: Directory header at 0x600, entries at 0x620
-                    if len(data) > 0x620:
-                        # Oliger has disk parameters at 0x600
-                        dir_header = data[0x600:0x620]
-                        if len(dir_header) >= 5:
-                            tracks = dir_header[0]
-                            sides = dir_header[1]
-                            total_cylinders = dir_header[2]
-                            
-                            # Validate reasonable disk parameters
-                            if 35 <= tracks <= 45 and sides in [1, 2] and total_cylinders > 0:
-                                # Additional check: disk name at offset 0x610
-                                disk_name = dir_header[16:32]
-                                # Check if disk name contains printable characters
-                                printable_chars = sum(1 for c in disk_name if 32 <= c <= 126 or c == 0)
-                                if printable_chars >= 4:
-                                    return "[Oliger]"
-                    
-                    # Fallback to file size heuristic
-                    size = os.path.getsize(filepath)
-                    if size > 300000:
-                        return "[Likely Larken]"
-                    else:
-                        return "[Likely Oliger]"
-            else:
-                return "[Unknown]"
-        except:
+                    data = f.read(0x700)
+
+                # Check for Larken: directory markers near offset 0xBC
+                if len(data) > 0xBC and data[0xBC] == 0xFF:
+                    larken_markers = sum(1 for i in range(0xBC, min(len(data), 0x200))
+                                        if data[i] in (0xFF, 0xFD, 0xF9, 0xFA, 0xFE))
+                    if larken_markers > 3:
+                        return "[Larken]"
+
+                # Check for Oliger V2: valid catalog header at 0x600
+                if len(data) > 0x620:
+                    tracks = data[0x600]
+                    sides = data[0x601]
+                    if 2 <= tracks <= 255 and sides in (1, 2):
+                        return "[Oliger V2]"
+
+                # Check for Oliger V1: BASIC boot with LOAD /n at start
+                if len(data) > 8:
+                    # V1 boot starts with 4-byte BASIC header then tokens
+                    import struct
+                    prog_len = struct.unpack_from('<H', data, 0)[0]
+                    if 0 < prog_len < 2000:
+                        # Scan for LOAD / token (0xEF 0x2F)
+                        if b'\xef\x2f' in data[4:4 + prog_len]:
+                            return "[Oliger V1]"
+
+                size = os.path.getsize(filepath)
+                if size > 300000:
+                    return "[Likely Larken]"
+                else:
+                    return "[IMG]"
+            return "[Unknown]"
+        except Exception:
             return "[Unknown]"
     
     def select_disk_image(self, prompt="Select disk image"):
@@ -220,42 +211,30 @@ class DiskImageManager:
         format_hint = self.detect_format_hint(filepath)
         
         try:
-            if "Zebra DIRSCP" in format_hint:
-                print("Format: Zebra DIRSCP")
-                print()
-                self.run_script("ZebraExtract.py", ["-f", filepath, "-c"])
-            
-            elif "Zebra CP/M" in format_hint:
-                print("Format: Zebra CP/M")
-                print()
-                self.run_script("ZebraRead_universal.py", ["-f", filepath, "-c"])
-            
+            if "Zebra" in format_hint:
+                self.run_script("ZebraRead.py", ["-f", filepath, "-c"])
+
+            elif "Sinclair QL" in format_hint:
+                self.run_script("QLRead.py", ["-f", filepath, "-c"])
+
+            elif "[Larken]" in format_hint:
+                self.run_script("LarkenRead.py", ["-f", filepath, "-c"])
+
+            elif "Oliger" in format_hint:
+                self.run_script("OligerRead.py", ["-f", filepath, "-c"])
+
             elif filepath.lower().endswith('.img'):
-                # Use improved detection to determine format
-                if "[Larken]" in format_hint:
-                    print("Format: Larken")
-                    print()
-                    self.run_script("LarkenRead_optimized.py", ["-f", filepath, "-c"])
-                elif "[Oliger]" in format_hint:
-                    print("Format: Oliger")
-                    print()
-                    self.run_script("OligerRead_optimized.py", ["-f", filepath, "-c"])
+                # Fallback: try Larken first, then Oliger
+                print("Format uncertain, trying Larken format...")
+                result = self.run_script("LarkenRead.py", ["-f", filepath, "-c"], capture_output=True)
+                if "Empty catalog" in result or not result.strip():
+                    print("Not Larken format. Trying Oliger format...")
+                    self.run_script("OligerRead.py", ["-f", filepath, "-c"])
                 else:
-                    # Fallback: try both formats
-                    print("Format uncertain, trying Larken format...")
-                    result = self.run_script("LarkenRead_optimized.py", ["-f", filepath, "-c"], capture_output=True)
-                    
-                    if "Empty catalog" in result or not result.strip():
-                        print("Not Larken format. Trying Oliger format...")
-                        self.run_script("OligerRead_optimized.py", ["-f", filepath, "-c"])
-                    else:
-                        print("Format: Larken")
-                        print()
-                        print(result)
-            
+                    print(result)
+
             else:
-                print("Unknown format - trying universal scanner...")
-                self.run_script("ZebraRead_universal.py", ["-f", filepath, "-c"])
+                print("Unknown format.")
         
         except Exception as e:
             print(f"Error analyzing disk image: {e}")
@@ -280,38 +259,27 @@ class DiskImageManager:
         format_hint = self.detect_format_hint(filepath)
         
         try:
-            if "Zebra DIRSCP" in format_hint:
-                print("Format: Zebra DIRSCP")
-                print()
-                self.run_script("ZebraExtract.py", ["-f", filepath])
-            
-            elif "Zebra CP/M" in format_hint:
-                print("Format: Zebra CP/M - extraction not implemented")
-                print("Use analyze option to view file catalog.")
-            
+            if "Zebra" in format_hint:
+                self.run_script("ZebraRead.py", ["-f", filepath])
+
+            elif "Sinclair QL" in format_hint:
+                self.run_script("QLRead.py", ["-f", filepath])
+
+            elif "[Larken]" in format_hint:
+                self.run_script("LarkenRead.py", ["-f", filepath])
+
+            elif "Oliger" in format_hint:
+                self.run_script("OligerRead.py", ["-f", filepath])
+
             elif filepath.lower().endswith('.img'):
-                # Use improved detection to determine format
-                if "[Larken]" in format_hint:
-                    print("Format detected: Larken")
-                    print()
-                    self.run_script("LarkenRead_optimized.py", ["-f", filepath])
-                elif "[Oliger]" in format_hint:
-                    print("Format detected: Oliger")
-                    print()
-                    self.run_script("OligerRead_optimized.py", ["-f", filepath])
+                print("Format uncertain, attempting Larken extraction...")
+                result = self.run_script("LarkenRead.py", ["-f", filepath, "-c"], capture_output=True)
+                if "Empty catalog" in result or not result.strip():
+                    print("Not Larken format. Attempting Oliger extraction...")
+                    self.run_script("OligerRead.py", ["-f", filepath])
                 else:
-                    # Fallback: try Larken first, then Oliger
-                    print("Format uncertain, attempting Larken extraction...")
-                    result = self.run_script("LarkenRead_optimized.py", ["-f", filepath, "-c"], capture_output=True)
-                    
-                    if "Empty catalog" in result or not result.strip():
-                        print("Not Larken format. Attempting Oliger extraction...")
-                        self.run_script("OligerRead_optimized.py", ["-f", filepath])
-                    else:
-                        print("Format detected: Larken")
-                        print()
-                        self.run_script("LarkenRead_optimized.py", ["-f", filepath])
-            
+                    self.run_script("LarkenRead.py", ["-f", filepath])
+
             else:
                 print("Unknown format - cannot extract files")
         
@@ -374,16 +342,18 @@ class DiskImageManager:
         print("=" * 50)
         print()
         print("SUPPORTED FORMATS:")
-        print("• Larken format (.img files) - Greaseweazle scans")
-        print("• Oliger format (.img files) - Greaseweazle scans") 
+        print("• Larken format (.img files) - LKDOS disk images")
+        print("• Oliger format (.img files) - JLO SAFE V1 and V2 disk images")
         print("• Zebra DIRSCP (.dsk files) - CPC DSK with hierarchical directories")
         print("• Zebra CP/M (.dsk files) - CPC DSK with flat file system")
+        print("• Sinclair QL (.img files) - QDOS QL5A/QL5B floppy disk images")
         print()
         print("FEATURES:")
         print("• Automatic format detection")
-        print("• File catalog viewing") 
+        print("• File catalog viewing")
         print("• File extraction to TAP format (Larken/Oliger)")
         print("• File extraction to native format (Zebra DIRSCP)")
+        print("• File extraction to raw binary (Sinclair QL)")
         print("• Creates output directories named after disk image")
         print()
         print("USAGE:")
@@ -395,6 +365,7 @@ class DiskImageManager:
         print("EXTRACTED FILES:")
         print("• Larken/Oliger: Creates .tap files compatible with ZX Spectrum emulators")
         print("• Zebra DIRSCP: Creates native files preserving directory structure")
+        print("• Sinclair QL: Creates raw binary files")
         print()
         print("GREASEWEAZLE IMAGING COMMANDS:")
         print("=" * 50)
