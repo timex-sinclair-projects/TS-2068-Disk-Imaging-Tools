@@ -5,9 +5,11 @@ A comprehensive Python toolkit for analyzing and extracting files from TS-2068 c
 ## Supported Formats
 
 - **Larken Format** (.img files) - 5KB blocks with directory at byte 188
-- **Oliger Format** (.img files) - 5KB blocks with directory at 0x600, cylinder-based allocation
+- **Oliger Format V2** (.img files) - 5KB blocks with catalog at 0x600, cylinder-based allocation
+- **Oliger Format V1** (.img files) - 5KB fixed file slots, no catalog, load-by-number
 - **Zebra DIRSCP Format** (.dsk files) - CPC DSK format with hierarchical directory system
 - **Zebra CP/M Format** (.dsk files) - CPC DSK format with flat CP/M file system
+- **Sinclair QL Format** (.img files) - QDOS QL5A/QL5B floppy disk images
 
 ## Features
 
@@ -60,11 +62,14 @@ Extract from specific formats directly:
 # Larken format
 python scripts/LarkenRead.py -f examples/larken.img
 
-# Oliger format
+# Oliger format (auto-detects V1 and V2)
 python scripts/OligerRead.py -f examples/oliger.img
 
 # Zebra DIRSCP format
 python scripts/ZebraExtract.py -f examples/zebra.dsk
+
+# Sinclair QL format
+python scripts/QLRead.py -f ql_disk.img
 
 # Universal analysis (any format)
 python scripts/ZebraRead.py -f examples/zebra.dsk -c
@@ -110,7 +115,8 @@ TS-2068-Disk-Imaging-Tools/
 ├── scripts/                     # Main scripts
 │   ├── DiskImageManager.py      # Main unified interface
 │   ├── LarkenRead.py            # Larken format extraction
-│   ├── OligerRead.py            # Oliger format extraction
+│   ├── OligerRead.py            # Oliger V1/V2 format extraction
+│   ├── QLRead.py                # Sinclair QL format extraction
 │   ├── ZebraExtract.py          # Zebra DIRSCP extraction
 │   ├── ZebraRead.py             # Universal format analyzer
 │   ├── archive/                 # Original/legacy scripts
@@ -122,7 +128,8 @@ TS-2068-Disk-Imaging-Tools/
 │       └── zebra_full_scan.py
 ├── docs/                        # Format documentation
 │   ├── LarkenRead.md            # LKDOS disk format & script reference
-│   ├── OligerRead.md            # JLO SAFE disk format & script reference
+│   ├── OligerRead.md            # JLO SAFE V1/V2 disk format & script reference
+│   ├── QLRead.md                # Sinclair QL QDOS disk format & script reference
 │   └── ZebraRead.md             # Zebra DIRSCP/CP/M format & script reference
 ├── examples/                    # Sample disk images
 │   ├── larken.img
@@ -146,6 +153,11 @@ TS-2068-Disk-Imaging-Tools/
 - Maintains directory organization
 - Files extracted in their native format
 
+### Raw Binary (Sinclair QL)
+- Files extracted with original QDOS content
+- Executables contain 68000 machine code
+- Data files retain their raw bytes
+
 ## Technical Details
 
 Detailed disk format documentation and script references are in the [docs/](docs/) folder:
@@ -153,24 +165,28 @@ Detailed disk format documentation and script references are in the [docs/](docs
 - **[docs/LarkenRead.md](docs/LarkenRead.md)** - LKDOS disk format: block layout, track map,
   directory markers, data block headers, file type conventions, TAP output format,
   and memory dump detection.
-- **[docs/OligerRead.md](docs/OligerRead.md)** - JLO SAFE/Oliger disk format: cylinder
-  interleaving, directory header and entries, file type codes, ABS state saves,
-  TAP output format, and comparison with LKDOS.
+- **[docs/OligerRead.md](docs/OligerRead.md)** - JLO SAFE/Oliger disk format: V2 cylinder
+  interleaving, directory header and entries, file type codes, ABS state saves;
+  V1 fixed-slot format, boot BASIC parsing, heuristic type detection; TAP output
+  format, and comparison with LKDOS.
+- **[docs/QLRead.md](docs/QLRead.md)** - Sinclair QL QDOS disk format: QL5A/QL5B layout,
+  sector de-interleaving, block allocation map, directory structure, and file
+  types.
 - **[docs/ZebraRead.md](docs/ZebraRead.md)** - Zebra disk format: CPC DSK container,
   sector interleaving (track skew table), DIRSCP hierarchical directories,
   CP/M flat directories, and comparison across all three formats.
 
 ### Format Summary
 
-| Feature           | Larken (LKDOS)       | Oliger (JLO SAFE)    | Zebra                 |
-|-------------------|----------------------|----------------------|-----------------------|
-| Image format      | Raw .img             | Raw .img             | Extended CPC .dsk     |
-| Block size        | 5,120 bytes          | 5,120 bytes          | 4,096 bytes           |
-| Sector size       | 512 bytes            | 512 bytes            | 256 bytes             |
-| Directory type    | Marker-delimited     | Fixed 20-byte entries| DIRSCP or CP/M        |
-| Subdirectories    | No                   | No                   | Yes (DIRSCP)          |
-| Output format     | .tap (ZX Spectrum)   | .tap (ZX Spectrum)   | Native binary         |
-| State saves       | 48K memory dumps     | 48.5K ABS saves      | N/A                   |
+| Feature           | Larken (LKDOS)       | Oliger (JLO SAFE)    | Zebra                 | Sinclair QL           |
+|-------------------|----------------------|----------------------|-----------------------|-----------------------|
+| Image format      | Raw .img             | Raw .img             | Extended CPC .dsk     | Raw .img              |
+| Block size        | 5,120 bytes          | 5,120 bytes          | 4,096 bytes           | 512 bytes (sectors)   |
+| Sector size       | 512 bytes            | 512 bytes            | 256 bytes             | 512 bytes             |
+| Directory type    | Marker-delimited     | V2: fixed entries; V1: none (slots) | DIRSCP or CP/M | QDOS directory        |
+| Subdirectories    | No                   | No                   | Yes (DIRSCP)          | No                    |
+| Output format     | .tap (ZX Spectrum)   | .tap (ZX Spectrum)   | Native binary         | Raw binary            |
+| State saves       | 48K memory dumps     | 48.5K ABS saves (V2)| N/A                   | N/A                   |
 
 ## Script Capabilities
 
@@ -188,7 +204,8 @@ The toolkit includes both **analysis** and **extraction** capabilities:
 
 #### Extraction Tools (Get Files)
 - **`LarkenRead.py`** - Extracts Larken format to TAP files (with CODE file fix and memory dump detection)
-- **`OligerRead.py`** - Extracts Oliger format to TAP files (with CODE file fix and ABS save detection)
+- **`OligerRead.py`** - Extracts Oliger format to TAP files (auto-detects V1/V2; V2 has CODE file fix and ABS save detection; V1 uses heuristic type detection)
+- **`QLRead.py`** - Extracts Sinclair QL QDOS files as raw binary (with sector de-interleaving)
 - **`ZebraExtract.py`** - Extracts DIRSCP format to native files
   - 📁 **Purpose:** Actually extract and save files from disk images
   - ✅ Creates filesystem directories matching disk structure
@@ -245,7 +262,7 @@ This project is open source. Please see the individual script headers for specif
 
 - **Greaseweazle Project** - For enabling reading of vintage disk formats
 - **TS-2068 Community** - For preserving and documenting these disk formats
-- **Original Format Developers** - Larken, Oliger, and Zebra disk system creators
+- **Original Format Developers** - Larken, Oliger, Zebra, and Sinclair QL disk system creators
 
 ## Support
 

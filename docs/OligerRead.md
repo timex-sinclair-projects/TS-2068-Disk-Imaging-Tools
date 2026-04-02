@@ -4,10 +4,11 @@
 
 `OligerRead.py` extracts files from raw disk images of floppy disks formatted
 by the Oliger disk interface with JLO SAFE (Save And File Everything) software
-for the Timex/Sinclair 2068 computer. It reads the JLO directory structure,
-extracts individual files, and converts them to the ZX Spectrum TAP tape format
-for use in emulators. Full-memory ABS state saves are detected automatically and
-saved as both raw dumps and launchable TAP files.
+for the Timex/Sinclair 2068 computer. It supports both **V2** (catalog-based)
+and **V1** (slot-based) disk formats, auto-detecting which is present. Files are
+extracted to the ZX Spectrum TAP tape format for use in emulators. Full-memory
+ABS state saves (V2) are detected automatically and saved as both raw dumps and
+launchable TAP files.
 
 ## Usage
 
@@ -255,6 +256,80 @@ Byte  N+1:   XOR checksum of bytes 2-N
 
 ---
 
+## JLO SAFE V1 Disk Format
+
+V1 is the earlier version of JLO SAFE. It stores files by number rather than by
+name and has no structured catalog. The script auto-detects V1 by checking the
+catalog header at offset 0x600 — if the tracks and sides bytes are zero or 0xE5,
+the disk is treated as V1.
+
+### V1 Detection
+
+The V2 catalog header at offset 0x600 in cylinder 0 always has a valid track
+count (byte 0, range 2–255) and side count (byte 1, value 1 or 2). On a V1 disk
+these bytes are zero or 0xE5 fill, since V1 does not write a catalog there.
+
+As a secondary indicator, the V1 boot BASIC program uses `LOAD /n` (load by file
+number) rather than `LOAD /"FILENAME"` (V2 load by name).
+
+### V1 Physical Layout
+
+V1 disks use the same physical parameters as V2 — 10 sectors of 512 bytes per
+track, with 5,120-byte cylinders. A typical V1 image is 409,600 bytes (80
+cylinders).
+
+File 0 (the boot menu program) occupies the beginning of cylinder 0. It is
+stored as a raw BASIC program preceded by a 4-byte header:
+
+| Offset | Size | Description                              |
+|--------|------|------------------------------------------|
+| 0–1    | 2    | Total BASIC data length (little-endian)  |
+| 2–3    | 2    | Offset to variables area (little-endian) |
+| 4+     | var  | Tokenized BASIC program + variables      |
+
+### V1 File Slots
+
+Files 1–15 are stored in fixed 5-cylinder (25,600-byte) slots. File *n* occupies
+cylinders *n*×5 through *n*×5+4:
+
+| File | Cylinders | Offset in image |
+|------|-----------|-----------------|
+| 0    | 0–4       | 0x00000         |
+| 1    | 5–9       | 0x06400         |
+| 2    | 10–14     | 0x0C800         |
+| …    | …         | …               |
+| 15   | 75–79     | 0x5DC00         |
+
+File 16, if present, would require cylinders 80–84 which exceed a standard
+80-cylinder image. The script warns when a file slot extends past the end of the
+image.
+
+### V1 File Type Detection
+
+V1 has no directory entries, so file type is determined heuristically from the
+data content:
+
+- **BASIC** — detected when the first 4 bytes of the slot data form a valid
+  header (prog_length, vars_offset) and the data at offset 4 parses as a BASIC
+  line (valid line number < 10000 and line length < 500).
+- **CODE** — everything else. The entire non-padding slot content is extracted
+  as a CODE block.
+
+### V1 File Names
+
+File names are extracted from the boot BASIC menu program by parsing PRINT
+statements that follow the pattern `"X. Program Name"` (where X is the key
+assigned to that file). The key-to-file-number mapping is:
+
+| Key | File # | Key | File # |
+|-----|--------|-----|--------|
+| 1   | 1      | 0   | 10     |
+| 2   | 2      | A   | 11     |
+| …   | …      | …   | …      |
+| 9   | 9      | F   | 16     |
+
+---
+
 ## Differences Between Oliger and LKDOS Disk Formats
 
 | Feature              | LKDOS (Larken)                    | JLO SAFE (Oliger)                  |
@@ -289,3 +364,6 @@ Byte  N+1:   XOR checksum of bytes 2-N
 7. **Extraction manifest**: A `manifest.md` file is written to the output
    directory listing disk metadata and a table mapping every original disk
    filename to its extracted filename(s).
+8. **JLO SAFE V1 support**: Auto-detects V1 format (no catalog, fixed 5-cylinder
+   file slots, `LOAD /n` commands). Parses the boot BASIC menu to recover file
+   names and numbers. Heuristically classifies files as BASIC or CODE.

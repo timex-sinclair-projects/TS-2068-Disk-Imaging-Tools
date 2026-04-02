@@ -24,6 +24,10 @@ ABS_SAVE_START = 0x3E00
 ABS_SAVE_SIZE = 49664  # 0xFFFF - 0x3E00 + 1
 ABS_SAVE_MIN = 45000   # threshold for detection
 
+# V1 format constants
+V1_SLOT_CYLINDERS = 5
+V1_SLOT_SIZE = V1_SLOT_CYLINDERS * BLOCK_SIZE  # 25600 bytes per slot
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Extract files from Oliger disk images")
     parser.add_argument("-f", "--imgfile", type=str, required=True,
@@ -71,6 +75,272 @@ def calculate_crc(data):
     for byte in data:
         result ^= byte
     return result.to_bytes(1, "little")
+
+def detect_format_version(first_block):
+    """Detect whether a disk image is JLO SAFE V1 or V2 format.
+
+    V2 has a valid catalog header at offset 0x600 with sensible track/side
+    values.  V1 has no catalog — the area is either 0xE5 fill or zeroed.
+    """
+    tracks = first_block[DIR_OFFSET]
+    sides = first_block[DIR_OFFSET + 1]
+    if 2 <= tracks <= 255 and sides in (1, 2):
+        return "V2"
+    return "V1"
+
+
+def parse_v1_boot_basic(first_block):
+    """Parse the V1 boot BASIC program to extract file names and numbers.
+
+    The boot program starts at byte 4 of the image (after a 4-byte header
+    containing prog_length and vars_offset, both little-endian).  It uses
+    PRINT statements for the menu and LOAD /n commands to load files.
+
+    The menu maps keys to file numbers:
+      keys '1'-'9'  -> LOAD /1 through LOAD /9  (via LOAD /VAL a$)
+      key  '0'      -> LOAD /10
+      keys 'A'-'F'  -> LOAD /11 through LOAD /16
+    """
+    import struct as _st
+
+    prog_len = _st.unpack_from('<H', first_block, 0)[0]
+    vars_off = _st.unpack_from('<H', first_block, 2)[0]
+
+    offset = 4
+    end = 4 + min(vars_off, prog_len, len(first_block) - 4)
+
+    # Collect menu items (key -> display name) and explicit LOAD /n numbers
+    menu_entries = {}   # key_char -> display_name
+    explicit_loads = {} # file_number -> True
+    has_load_val = False  # LOAD /VAL a$ detected (handles files 1-9)
+
+    while offset + 4 <= end:
+        line_num = _st.unpack_from('>H', first_block, offset)[0]
+        line_len = _st.unpack_from('<H', first_block, offset + 2)[0]
+        if line_num > 9999 or line_len > 500 or line_len == 0:
+            break
+        line_data = first_block[offset + 4:offset + 4 + line_len]
+
+        # Extract menu items from PRINT statements: "X. Program Name"
+        qstart = line_data.find(0x22)
+        if qstart != -1:
+            qend = line_data.find(0x22, qstart + 1)
+            if qend != -1:
+                text = line_data[qstart + 1:qend].decode('ascii', errors='replace').strip()
+                if len(text) > 3 and text[1] == '.':
+                    key = text[0].upper()
+                    name = text[3:].strip()
+                    paren = name.find('(')
+                    if paren > 0:
+                        name = name[:paren].strip()
+                    if name:
+                        menu_entries[key] = name
+
+        # Scan for LOAD / patterns  (token 0xEF = LOAD, then 0x2F = '/')
+        i = 0
+        while i < len(line_data) - 2:
+            if line_data[i] == 0xEF and line_data[i + 1] == 0x2F:
+                i += 2
+                # Check what follows the /
+                if i < len(line_data) and line_data[i] == 0xB0:
+                    # 0xB0 = VAL token -> LOAD /VAL a$ (handles digits 1-9)
+                    has_load_val = True
+                else:
+                    # Literal digit(s) -> LOAD /10, /11, etc.
+                    digits = ''
+                    while i < len(line_data) and 0x30 <= line_data[i] <= 0x39:
+                        digits += chr(line_data[i])
+                        i += 1
+                    if i < len(line_data) and line_data[i] == 0x0E:
+                        i += 6  # skip inline number
+                    if digits:
+                        explicit_loads[int(digits)] = True
+                continue
+            i += 1
+
+        offset += 4 + line_len
+
+    # Build the file number -> name mapping.
+    # Key '1'-'9' -> file 1-9 (via LOAD /VAL a$)
+    # Key '0'     -> file 10 (via LOAD /10)
+    # Key 'A'-'F' -> file 11-16 (via LOAD /11 - /16)
+    key_to_file = {}
+    for ch in '123456789':
+        key_to_file[ch] = int(ch)
+    key_to_file['0'] = 10
+    for i, ch in enumerate('ABCDEF'):
+        key_to_file[ch] = 11 + i
+
+    file_names = {}
+    file_numbers = []
+
+    if has_load_val:
+        for n in range(1, 10):
+            file_numbers.append(n)
+
+    for fnum in sorted(explicit_loads):
+        if fnum > 0 and fnum not in file_numbers:
+            file_numbers.append(fnum)
+
+    file_numbers.sort()
+
+    # Map names from menu entries
+    for key, name in menu_entries.items():
+        fnum = key_to_file.get(key)
+        if fnum is not None:
+            file_names[fnum] = name
+            if fnum not in file_numbers:
+                file_numbers.append(fnum)
+
+    file_numbers.sort()
+
+    # Fill in any missing names
+    for fnum in file_numbers:
+        if fnum not in file_names:
+            file_names[fnum] = f"File {fnum}"
+
+    return {
+        "prog_len": prog_len,
+        "vars_off": vars_off,
+        "file_numbers": file_numbers,
+        "names": file_names,
+    }
+
+
+def read_v1_catalog(img_path):
+    """Build a virtual catalog for a V1 disk by parsing the boot BASIC
+    and probing each 5-cylinder file slot for data."""
+    try:
+        with open(img_path, 'rb') as f:
+            first_block = f.read(BLOCK_SIZE)
+            file_size = os.path.getsize(img_path)
+
+        boot = parse_v1_boot_basic(first_block)
+
+        print(f"Format: JLO SAFE V1")
+        print(f"File size: {file_size}")
+        print(f"Files detected: {len(boot['file_numbers'])}")
+
+        file_directory = []
+
+        with open(img_path, 'rb') as f:
+            for fnum in boot["file_numbers"]:
+                slot_offset = fnum * V1_SLOT_SIZE
+                if slot_offset + V1_SLOT_SIZE > file_size:
+                    print(f"Warning: File {fnum} slot extends past end of image")
+                    continue
+
+                f.seek(slot_offset)
+                slot_data = f.read(V1_SLOT_SIZE)
+
+                # Skip empty slots
+                if all(b == 0xE5 for b in slot_data[:512]):
+                    # First sector is all e5 — check sector 4 (offset 0x600)
+                    # which may contain file data in V1 format
+                    if slot_offset + 0x600 < file_size:
+                        f.seek(slot_offset + 0x600)
+                        probe = f.read(512)
+                        if all(b == 0xE5 for b in probe):
+                            continue
+                    else:
+                        continue
+
+                name = boot["names"].get(fnum, f"File {fnum}")
+                entry = {
+                    "filename": name[:10].ljust(10),
+                    "filetype": TYPE_CODE,      # default; refined below
+                    "filesize": 0,              # computed during extraction
+                    "staline": 0,
+                    "param2": 0,
+                    "cylinder": fnum * V1_SLOT_CYLINDERS,
+                    "cylused": V1_SLOT_CYLINDERS,
+                    "v1_file_number": fnum,
+                }
+                file_directory.append(entry)
+
+        return file_directory
+
+    except Exception as e:
+        print(f"Error reading V1 catalog: {e}")
+        return []
+
+
+def read_v1_file_data(img_path, file_entry):
+    """Read and classify a V1 file from its 5-cylinder slot.
+
+    V1 files have no catalog metadata, so we detect the file type
+    heuristically from the data content.
+    """
+    import struct as _st
+
+    try:
+        with open(img_path, 'rb') as f:
+            cyl = file_entry["cylinder"]
+            ncyl = file_entry["cylused"]
+            f.seek(cyl * BLOCK_SIZE)
+            raw = f.read(ncyl * BLOCK_SIZE)
+
+        # Strip trailing e5 fill to find the effective data length
+        end = len(raw)
+        while end > 0 and raw[end - 1] == 0xE5:
+            end -= 1
+        # Also strip trailing zeros — many saves zero-pad
+        data_end = end
+        while data_end > 0 and raw[data_end - 1] == 0x00:
+            data_end -= 1
+        if data_end == 0:
+            data_end = end  # all zeros is valid data (e.g. cleared screen)
+
+        # Determine where the real data starts.
+        # Even-numbered slots may have e5-filled sectors 1-3 in the first
+        # cylinder(s).  Find the first non-e5 byte.
+        data_start = 0
+        while data_start < len(raw) and raw[data_start] == 0xE5:
+            data_start += 1
+        # Align to sector boundary
+        data_start = (data_start // 512) * 512
+
+        effective = raw[data_start:end]
+        if not effective:
+            return None
+
+        # --- Heuristic type detection ---
+
+        # Check for BASIC program header (4 bytes: prog_len + vars_offset)
+        if len(effective) >= 8:
+            prog_len = _st.unpack_from('<H', effective, 0)[0]
+            vars_off = _st.unpack_from('<H', effective, 2)[0]
+            diff = prog_len - vars_off
+            if (0 < prog_len < len(effective)
+                    and 0 < vars_off <= prog_len
+                    and 0 <= diff < 1000):
+                # Verify first BASIC line structure at offset 4
+                if len(effective) > 8:
+                    test_line = _st.unpack_from('>H', effective, 4)[0]
+                    test_len = _st.unpack_from('<H', effective, 6)[0]
+                    if 0 < test_line < 10000 and 0 < test_len < 500:
+                        # Looks like a BASIC program
+                        basic_data = effective[4:4 + prog_len]
+                        file_entry["filetype"] = TYPE_BASIC
+                        file_entry["filesize"] = prog_len
+                        file_entry["staline"] = test_line  # autostart = first line
+                        file_entry["param2"] = vars_off
+                        file_entry["fileContent"] = bytearray(basic_data)
+                        return file_entry
+
+        # Not BASIC — treat as CODE.
+        # Use the full effective data range.
+        file_entry["filetype"] = TYPE_CODE
+        file_entry["filesize"] = len(effective)
+        file_entry["staline"] = 0  # unknown start address; default 0
+        file_entry["param2"] = 32768
+        file_entry["fileContent"] = bytearray(effective)
+        return file_entry
+
+    except Exception as e:
+        print(f"Error reading V1 file data: {e}")
+        return None
+
 
 def read_catalog(img_path):
     """Read the file catalog from Oliger disk image"""
@@ -391,11 +661,13 @@ def write_manifest(output_path, img_path, disk_info, extracted_files):
     with open(manifest_path, "w") as f:
         f.write(f"# {img_name}\n\n")
         f.write("## Disk Information\n\n")
-        f.write(f"- **Format:** Oliger (JLO SAFE)\n")
+        fmt_ver = disk_info.get("format_version", "V2")
+        f.write(f"- **Format:** Oliger (JLO SAFE {fmt_ver})\n")
         if disk_info.get("disk_name"):
             f.write(f"- **Disk name:** {disk_info['disk_name']}\n")
-        f.write(f"- **Sides:** {disk_info['sides']}\n")
-        f.write(f"- **Tracks:** {disk_info['tracks']}\n")
+        if fmt_ver == "V2":
+            f.write(f"- **Sides:** {disk_info['sides']}\n")
+            f.write(f"- **Tracks:** {disk_info['tracks']}\n")
         f.write(f"- **Total cylinders:** {disk_info['total_cylinders']}\n")
         f.write(f"- **Source image:** {img_name}\n")
         f.write("\n")
@@ -422,8 +694,18 @@ def main():
         print(f"Error: File '{args.imgfile}' not found")
         sys.exit(1)
 
+    # Detect format version
+    with open(args.imgfile, 'rb') as f:
+        first_block = f.read(BLOCK_SIZE)
+
+    version = detect_format_version(first_block)
+    is_v1 = version == "V1"
+
     # Get catalog
-    catalog = read_catalog(args.imgfile)
+    if is_v1:
+        catalog = read_v1_catalog(args.imgfile)
+    else:
+        catalog = read_catalog(args.imgfile)
 
     if not catalog:
         print("Empty catalog.")
@@ -436,12 +718,24 @@ def main():
         for entry in catalog:
             kind = get_file_type_name(entry["filetype"])
             extra = ""
-            # Peek at file data to detect ABS saves
-            file_data = read_file_data(args.imgfile, entry)
-            if file_data and is_abs_state_save(file_data):
-                extra = " [ABS state save]"
-            print(f'{entry["filename"]:12s} {kind:14s} {entry["filesize"]:6d}  '
-                  f'cyl {entry["cylinder"]:3d}  ({entry["cylused"]} cyl){extra}')
+            if is_v1:
+                fnum = entry.get("v1_file_number", "?")
+                # Read data to determine actual type and size
+                file_data = read_v1_file_data(args.imgfile, entry.copy())
+                if file_data:
+                    kind = get_file_type_name(file_data["filetype"])
+                    size = file_data["filesize"]
+                else:
+                    size = 0
+                print(f'{entry["filename"]:12s} #{fnum:<3}  {kind:14s} {size:6d}  '
+                      f'cyl {entry["cylinder"]:3d}  ({entry["cylused"]} cyl)')
+            else:
+                # Peek at file data to detect ABS saves
+                file_data = read_file_data(args.imgfile, entry)
+                if file_data and is_abs_state_save(file_data):
+                    extra = " [ABS state save]"
+                print(f'{entry["filename"]:12s} {kind:14s} {entry["filesize"]:6d}  '
+                      f'cyl {entry["cylinder"]:3d}  ({entry["cylused"]} cyl){extra}')
         return
 
     print(f"Processing: {args.imgfile}")
@@ -455,50 +749,57 @@ def main():
         print(f"Error creating directory: {e}")
         output_path = ''
 
-    # Read disk info for manifest
-    with open(args.imgfile, 'rb') as f:
-        first_block = f.read(BLOCK_SIZE)
-    dir_header = first_block[DIR_OFFSET:DIR_OFFSET + DIR_HEADER_SIZE]
-    disk_info = {
-        "tracks": dir_header[0],
-        "sides": dir_header[1],
-        "total_cylinders": dir_header[2],
-        "disk_name": dir_header[16:32].decode('ascii', errors='ignore').rstrip(),
-    }
+    # Build disk info for manifest
+    if is_v1:
+        boot = parse_v1_boot_basic(first_block)
+        disk_info = {
+            "format_version": "V1",
+            "tracks": 0,
+            "sides": 0,
+            "total_cylinders": os.path.getsize(args.imgfile) // BLOCK_SIZE,
+            "disk_name": "",
+        }
+    else:
+        dir_header = first_block[DIR_OFFSET:DIR_OFFSET + DIR_HEADER_SIZE]
+        disk_info = {
+            "format_version": "V2",
+            "tracks": dir_header[0],
+            "sides": dir_header[1],
+            "total_cylinders": dir_header[2],
+            "disk_name": dir_header[16:32].decode('ascii', errors='ignore').rstrip(),
+        }
 
     extracted_files = []
 
+    def extract_entry(entry):
+        if is_v1:
+            file_data = read_v1_file_data(args.imgfile, entry)
+        else:
+            file_data = read_file_data(args.imgfile, entry)
+        paths = []
+        if file_data:
+            if not is_v1 and is_abs_state_save(file_data):
+                paths = write_abs_dump(output_path, file_data)
+            else:
+                paths = write_tap_file(output_path, file_data)
+        return file_data, paths
+
     # Process files
     if args.specific:
-        # Extract specific file
         found = False
         for entry in catalog:
             if entry["filename"].rstrip() == args.specific.rstrip():
                 print(f"Extracting: {entry['filename']}")
-                file_data = read_file_data(args.imgfile, entry)
-                paths = []
-                if file_data:
-                    if is_abs_state_save(file_data):
-                        paths = write_abs_dump(output_path, file_data)
-                    else:
-                        paths = write_tap_file(output_path, file_data)
+                file_data, paths = extract_entry(entry)
                 extracted_files.append((entry, paths))
                 found = True
                 break
-
         if not found:
             print(f"File '{args.specific}' not found in catalog")
     else:
-        # Extract all files
         for entry in catalog:
             print(f"Extracting: {entry['filename']}")
-            file_data = read_file_data(args.imgfile, entry)
-            paths = []
-            if file_data:
-                if is_abs_state_save(file_data):
-                    paths = write_abs_dump(output_path, file_data)
-                else:
-                    paths = write_tap_file(output_path, file_data)
+            file_data, paths = extract_entry(entry)
             extracted_files.append((entry, paths))
 
     if extracted_files:
