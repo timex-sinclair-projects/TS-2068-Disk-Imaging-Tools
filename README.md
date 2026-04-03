@@ -7,6 +7,8 @@ A comprehensive Python toolkit for analyzing and extracting files from TS-2068 c
 - **Larken Format** (.img files) - 5KB blocks with directory at byte 188
 - **Oliger Format V2** (.img files) - 5KB blocks with catalog at 0x600, cylinder-based allocation
 - **Oliger Format V1** (.img files) - 5KB fixed file slots, no catalog, load-by-number
+- **Aerco FD / DOS-64 Format** (.img files) - Aerco FD-68 disk interface with DOS-64
+- **Aerco RP/M Format** (.img files) - CP/M 2.2 clone for Aerco hardware
 - **Zebra DIRSCP Format** (.dsk files) - CPC DSK format with hierarchical directory system
 - **Zebra CP/M Format** (.dsk files) - CPC DSK format with flat CP/M file system
 - **Sinclair QL Format** (.img files) - QDOS QL5A/QL5B floppy disk images (catalog fully supported; extraction partial — see docs)
@@ -65,6 +67,9 @@ python scripts/LarkenRead.py -f examples/larken.img
 # Oliger format (auto-detects V1 and V2)
 python scripts/OligerRead.py -f examples/oliger.img
 
+# Aerco FD / DOS-64 format
+python scripts/AercoRead.py -f examples/aerco-update-oct.img
+
 # Zebra format (auto-detects DIRSCP / CP/M)
 python scripts/ZebraRead.py -f examples/zebra.dsk
 
@@ -112,6 +117,7 @@ TS-2068-Disk-Imaging-Tools/
 ├── scripts/                     # Main scripts
 │   ├── DiskImageManager.py      # Main unified interface
 │   ├── LarkenRead.py            # Larken format extraction
+│   ├── AercoRead.py             # Aerco FD / DOS-64 extraction
 │   ├── OligerRead.py            # Oliger V1/V2 format extraction
 │   ├── QLRead.py                # Sinclair QL format extraction
 │   ├── ZebraRead.py             # Zebra DIRSCP/CP/M analysis & extraction
@@ -124,6 +130,7 @@ TS-2068-Disk-Imaging-Tools/
 │   └── test/                    # Test scripts
 │       └── zebra_full_scan.py
 ├── docs/                        # Format documentation
+│   ├── AercoRead.md             # Aerco FD / DOS-64 disk format & script reference
 │   ├── LarkenRead.md            # LKDOS disk format & script reference
 │   ├── OligerRead.md            # JLO SAFE V1/V2 disk format & script reference
 │   ├── QLRead.md                # Sinclair QL QDOS disk format & script reference
@@ -159,6 +166,9 @@ TS-2068-Disk-Imaging-Tools/
 
 Detailed disk format documentation and script references are in the [docs/](docs/) folder:
 
+- **[docs/AercoRead.md](docs/AercoRead.md)** - Aerco FD / DOS-64 disk format: boot sector,
+  allocation bitmap, directory entries, file types, block numbering, on-disk
+  file headers, and RP/M identification.
 - **[docs/LarkenRead.md](docs/LarkenRead.md)** - LKDOS disk format: block layout, track map,
   directory markers, data block headers, file type conventions, TAP output format,
   and memory dump detection.
@@ -175,15 +185,15 @@ Detailed disk format documentation and script references are in the [docs/](docs
 
 ### Format Summary
 
-| Feature           | Larken (LKDOS)       | Oliger (JLO SAFE)    | Zebra                 | Sinclair QL           |
-|-------------------|----------------------|----------------------|-----------------------|-----------------------|
-| Image format      | Raw .img             | Raw .img             | Extended CPC .dsk     | Raw .img              |
-| Block size        | 5,120 bytes          | 5,120 bytes          | 4,096 bytes           | 512 bytes (sectors)   |
-| Sector size       | 512 bytes            | 512 bytes            | 256 bytes             | 512 bytes             |
-| Directory type    | Marker-delimited     | V2: fixed entries; V1: none (slots) | DIRSCP or CP/M | QDOS directory        |
-| Subdirectories    | No                   | No                   | Yes (DIRSCP)          | No                    |
-| Output format     | .tap (ZX Spectrum)   | .tap (ZX Spectrum)   | Native binary         | Raw binary            |
-| State saves       | 48K memory dumps     | 48.5K ABS saves (V2)| N/A                   | N/A                   |
+| Feature           | Larken (LKDOS)       | Oliger (JLO SAFE)    | Aerco (DOS-64)        | Zebra                 | Sinclair QL           |
+|-------------------|----------------------|----------------------|-----------------------|-----------------------|-----------------------|
+| Image format      | Raw .img             | Raw .img             | Raw .img              | Extended CPC .dsk     | Raw .img              |
+| Block size        | 5,120 bytes          | 5,120 bytes          | 5,120 bytes (track)   | 4,096 bytes           | 512 bytes (sectors)   |
+| Sector size       | 512 bytes            | 512 bytes            | 512 bytes             | 256 bytes             | 512 bytes             |
+| Directory type    | Marker-delimited     | V2: fixed entries; V1: none (slots) | Fixed 32-byte entries | DIRSCP or CP/M | QDOS directory        |
+| Subdirectories    | No                   | No                   | No                    | Yes (DIRSCP)          | No                    |
+| Output format     | .tap (ZX Spectrum)   | .tap (ZX Spectrum)   | .tap + raw .bin       | Native binary         | Raw binary            |
+| State saves       | 48K memory dumps     | 48.5K ABS saves (V2)| N/A                   | N/A                   | N/A                   |
 
 ## Script Capabilities
 
@@ -192,6 +202,7 @@ Detailed disk format documentation and script references are in the [docs/](docs
 The toolkit includes both **analysis** and **extraction** capabilities:
 
 #### Extraction Tools
+- **`AercoRead.py`** - Extracts Aerco FD / DOS-64 files to TAP (BASIC/CODE) and raw binary (MODULE); also extracts RP/M (CP/M) files as native binary
 - **`LarkenRead.py`** - Extracts Larken format to TAP files (with CODE file fix and memory dump detection)
 - **`OligerRead.py`** - Extracts Oliger format to TAP files (auto-detects V1/V2; V2 has CODE file fix and ABS save detection; V1 uses heuristic type detection)
 - **`QLRead.py`** - Extracts Sinclair QL QDOS files as raw binary (with sector de-interleaving; catalog display works fully, extraction may be incomplete for files whose map entries span interleaved sectors)
@@ -250,7 +261,7 @@ This project is open source. Please see the individual script headers for specif
 
 - **Greaseweazle Project** - For enabling reading of vintage disk formats
 - **TS-2068 Community** - For preserving and documenting these disk formats
-- **Original Format Developers** - Larken, Oliger, Zebra, and Sinclair QL disk system creators
+- **Original Format Developers** - Aerco, Larken, Oliger, Zebra, and Sinclair QL disk system creators
 
 ## Support
 
