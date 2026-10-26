@@ -114,12 +114,9 @@ def read_catalog(img_path):
             print(f"Tracks: {tracks}")
             print(f"File size: {file_size}")
 
-            # Determine if we need to divide blocks
-            divide_blocks = file_size < 250000 and sides == 1
-
-            if sides == 1 and file_size > 400000:
-                log_bad_file(img_path, "Single sided imaged as double sided.")
-                sys.exit("Extraction ended. Single sided disk with too many bytes.")
+            # Block numbers count both sides, so a single-sided image (one track after
+            # another, whether imaged at 40 or 80 tracks) needs them halved.
+            divide_blocks = sides == 1
 
             print(f"Divide blocks: {divide_blocks}")
 
