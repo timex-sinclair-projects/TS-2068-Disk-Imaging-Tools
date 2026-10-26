@@ -11,6 +11,7 @@ A comprehensive Python toolkit for analyzing and extracting files from TS-2068 c
 - **Aerco RP/M Format** (.img files) - CP/M 2.2 clone for Aerco hardware
 - **Zebra DIRSCP Format** (.dsk files) - CPC DSK format with hierarchical directory system
 - **Zebra CP/M Format** (.dsk files) - CPC DSK format with flat CP/M file system
+- **AERCO FD-ZX Format** (.img files) - ZX81/TS1000 FD-ZX interface: SADOS and BBDOS 4.0 page disks ([format notes](docs/FDZXRead.md))
 - **Sinclair QL Format** (.img files) - QDOS QL5A/QL5B floppy disk images (catalog fully supported; extraction partial — see docs)
 
 ## Features
@@ -73,6 +74,9 @@ python scripts/AercoRead.py -f examples/aerco-update-oct.img
 # Zebra format (auto-detects DIRSCP / CP/M)
 python scripts/ZebraRead.py -f examples/zebra.dsk
 
+# AERCO FD-ZX (ZX81/TS1000: SADOS, BBDOS 4.0) - writes .p files
+python scripts/FDZXRead.py -f fdzx_disk.img
+
 # Sinclair QL format
 python scripts/QLRead.py -f ql_disk.img
 ```
@@ -118,6 +122,7 @@ TS-2068-Disk-Imaging-Tools/
 │   ├── DiskImageManager.py      # Main unified interface
 │   ├── LarkenRead.py            # Larken format extraction
 │   ├── AercoRead.py             # Aerco FD / DOS-64 extraction
+│   ├── FDZXRead.py              # AERCO FD-ZX (ZX81/TS1000) extraction
 │   ├── OligerRead.py            # Oliger V1/V2 format extraction
 │   ├── QLRead.py                # Sinclair QL format extraction
 │   ├── ZebraRead.py             # Zebra DIRSCP/CP/M analysis & extraction
