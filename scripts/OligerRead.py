@@ -345,6 +345,26 @@ def read_v1_file_data(img_path, file_entry):
         return None
 
 
+def single_sided_is_interleaved(f, file_directory):
+    """Decide how a single-sided disk imaged at 80-track size is laid out.
+
+    Tracks in order: track t at t * BLOCK_SIZE. Sides interleaved: track t at
+    2t * BLOCK_SIZE, with the unused side's blocks left as 0xE5 filler. Count the
+    file blocks each layout would read that are pure filler and take the layout
+    with fewer.
+    """
+    def filler(step):
+        n = 0
+        for entry in file_directory:
+            for k in range(entry["cylused"]):
+                f.seek((entry["cylinder"] + k) * step * BLOCK_SIZE)
+                block = f.read(BLOCK_SIZE)
+                n += len(block) == BLOCK_SIZE and block.count(0xE5) == BLOCK_SIZE
+        return n
+    in_order, interleaved = filler(1), filler(2)
+    print(f"Single-sided layout check: {in_order} filler blocks in order, {interleaved} interleaved")
+    return interleaved < in_order
+
 def read_catalog(img_path):
     """Read the file catalog from Oliger disk image"""
     try:
@@ -373,10 +393,10 @@ def read_catalog(img_path):
             print(f"Available cylinders: {available_cylinders}")
             print(f"File size: {file_size}")
 
-            # A single-sided disk may be imaged at the full 80-track size (409,600 bytes);
-            # its tracks are still laid out one after another, so it reads the same way.
-            if sides == 1 and file_size > 400000:
-                print("Note: single-sided disk in an 80-track image; reading tracks in order.")
+            # A single-sided disk imaged at the full 80-track size (409,600 bytes) is
+            # usually tracks in order, but some are stored with the empty second side
+            # interleaved; the layout is checked once the directory has been read.
+            interleaved = False
 
             # Parse directory entries starting at 0x620
             file_directory = []
@@ -403,6 +423,14 @@ def read_catalog(img_path):
                 file_directory.append(file_entry)
                 entry_offset += DIR_ENTRY_SIZE
 
+            if sides == 1 and file_size > 400000:
+                interleaved = single_sided_is_interleaved(f, file_directory)
+                if interleaved:
+                    for file_entry in file_directory:
+                        file_entry["cylinder"] *= 2
+                        file_entry["cylstep"] = 2
+                print("Single-sided layout: " + ("sides interleaved" if interleaved else "tracks in order"))
+
             return file_directory
 
     except Exception as e:
@@ -420,7 +448,7 @@ def read_file_data(img_path, file_entry):
 
             # Read all cylinders for this file
             for cyl_offset in range(cylinders_used):
-                seek_position = (start_cylinder + cyl_offset) * BLOCK_SIZE
+                seek_position = (start_cylinder + cyl_offset * file_entry.get("cylstep", 1)) * BLOCK_SIZE
                 f.seek(seek_position)
 
                 cylinder_data = f.read(BLOCK_SIZE)
