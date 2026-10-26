@@ -96,6 +96,24 @@ def find_directory_start(block0):
         index += 1
     return None
 
+def choose_single_sided_layout(f, file_directory):
+    """Pick the block layout of a single-sided image larger than 40 tracks.
+
+    Such an image is either tracks in order (block numbers halved) or a
+    single-sided disk imaged double-sided (block numbers used as stored). Every
+    file block starts with 0xFF, so count the markers each layout would hit.
+    """
+    def hits(divide):
+        n = 0
+        for entry in file_directory:
+            for b in entry["blocks"]:
+                f.seek((b // 2 if divide else b) * BLOCK_SIZE)
+                n += f.read(1) == b"\xff"
+        return n
+    halved, stored = hits(True), hits(False)
+    print(f"Single-sided layout check: {halved} valid blocks halved, {stored} as stored")
+    return halved >= stored
+
 def read_catalog(img_path):
     """Read the file catalog from disk image"""
     try:
@@ -114,11 +132,11 @@ def read_catalog(img_path):
             print(f"Tracks: {tracks}")
             print(f"File size: {file_size}")
 
-            # Block numbers count both sides, so a single-sided image (one track after
-            # another, whether imaged at 40 or 80 tracks) needs them halved.
+            # Block numbers count both sides. A single-sided image normally holds one
+            # track after another, so the numbers are halved; but a single-sided disk
+            # imaged double-sided (80-track size) keeps the doubled layout. For large
+            # single-sided images the layout is chosen from the block markers below.
             divide_blocks = sides == 1
-
-            print(f"Divide blocks: {divide_blocks}")
 
             # Find directory start dynamically
             dir_start = find_directory_start(first_block)
@@ -147,8 +165,7 @@ def read_catalog(img_path):
                             # Read block list
                             blocks = []
                             while index < len(first_block) and first_block[index] != BLOCK_LIST_END:
-                                block_num = first_block[index] // 2 if divide_blocks else first_block[index]
-                                blocks.append(block_num)
+                                blocks.append(first_block[index])
                                 index += 1
 
                             if blocks:  # Only add if we have blocks
@@ -167,6 +184,13 @@ def read_catalog(img_path):
                             index += 1
 
                 index += 1
+
+            if sides == 1 and file_size > 250000:
+                divide_blocks = choose_single_sided_layout(f, file_directory)
+            print(f"Divide blocks: {divide_blocks}")
+            if divide_blocks:
+                for entry in file_directory:
+                    entry["blocks"] = [b // 2 for b in entry["blocks"]]
 
             return file_directory, divide_blocks
 
@@ -212,6 +236,13 @@ def read_file_data(img_path, file_entry):
                 # Get data size and extract data
                 data_size = int.from_bytes(block[14:16], "little")
                 file_content.extend(block[24:24 + data_size])
+
+            if "fileStartAddr" not in file_data:
+                # The file's first block was unreadable, so it has no header; skip it
+                # rather than stopping the whole extraction.
+                print(f"Warning: no readable header for {file_entry['filename'].rstrip()}; file skipped")
+                log_bad_file(img_path, "First block unreadable; file skipped.")
+                return None
 
             file_data["fileContent"] = file_content
             return file_data
