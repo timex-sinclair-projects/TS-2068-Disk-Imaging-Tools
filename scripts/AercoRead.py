@@ -107,7 +107,7 @@ def read_disk_name(data):
     return data[6:16].decode('ascii', errors='replace').rstrip('\x00 ')
 
 
-def block_to_offset(block_num, num_tracks):
+def block_to_offset(block_num, num_tracks, interleaved=False):
     """Convert a block number to an image byte offset.
 
     Blocks 0x00-0x7F map to side 0 tracks (block N = track N).
@@ -121,8 +121,12 @@ def block_to_offset(block_num, num_tracks):
       side 0 track T = offset T * TRACK_SIZE
       side 1 track T = offset (num_tracks/2 + T) * TRACK_SIZE
 
-    We detect the layout by checking which interpretation produces valid data.
+    detect_side_layout() picks the layout for a given image.
     """
+    if interleaved:
+        if block_num < 0x80:
+            return block_num * 2 * TRACK_SIZE
+        return ((block_num - 0x80) * 2 + 1) * TRACK_SIZE
     if block_num < 0x80:
         # Side 0
         return block_num * TRACK_SIZE
@@ -130,6 +134,31 @@ def block_to_offset(block_num, num_tracks):
         # Side 1: stored as tracks 40-79 in a sequential-sides image
         half = num_tracks // 2
         return (half + (block_num - 0x80)) * TRACK_SIZE
+
+
+def detect_side_layout(data, entries):
+    """Return True if the image stores the two sides interleaved.
+
+    The first block of every BASIC, CODE or DATA file starts with a header
+    holding the file's name, so count how many names each layout finds.
+    Sequential wins a tie, as it was the only layout read before.
+    """
+    num_tracks = len(data) // TRACK_SIZE
+
+    def hits(interleaved):
+        n = 0
+        for entry in entries:
+            if entry["filetype"] not in (TYPE_BASIC, TYPE_CODE, TYPE_DATA) or not entry["blocks"]:
+                continue
+            offset = block_to_offset(entry["blocks"][0], num_tracks, interleaved)
+            header = data[offset:offset + FILE_HEADER_SIZE]
+            name = header[1:11].split(b"\0")[0].decode("ascii", errors="replace")
+            n += name.rstrip() == entry["filename"].rstrip()
+        return n
+
+    sequential, interleaved = hits(False), hits(True)
+    print(f"Side layout check: {sequential} headers found sequential, {interleaved} interleaved")
+    return interleaved > sequential
 
 
 def read_catalog(data):
@@ -206,7 +235,7 @@ def read_file_data(data, file_entry):
     file_content = bytearray()
 
     for i, block in enumerate(blocks):
-        offset = block_to_offset(block, num_tracks)
+        offset = block_to_offset(block, num_tracks, file_entry.get("interleaved", False))
         if offset + TRACK_SIZE > len(data):
             break
 
@@ -502,6 +531,9 @@ def main():
 
     # DOS-64 format
     catalog = read_catalog(data)
+    interleaved = detect_side_layout(data, catalog)
+    for entry in catalog:
+        entry["interleaved"] = interleaved
 
     if not catalog:
         print("Empty catalog.")
