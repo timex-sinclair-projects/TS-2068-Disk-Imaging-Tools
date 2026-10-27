@@ -114,6 +114,34 @@ def choose_single_sided_layout(f, file_directory):
     print(f"Single-sided layout check: {halved} valid blocks halved, {stored} as stored")
     return halved >= stored
 
+def remap_by_block_header(f, file_size, file_directory, divide_blocks):
+    """Place blocks by the logical number LKDOS stores in each block header.
+
+    Byte 1 of every file block holds its logical block number. When an image
+    lost blocks (a dropped sector, or an 80-track disk imaged on a 40-track
+    drive, which keeps only every other cylinder) the computed positions no
+    longer line up, so look each block up by that number instead. Blocks not
+    in the image are set to None and reported as missing.
+    """
+    found = {}
+    for k in range(1, file_size // BLOCK_SIZE):
+        f.seek(k * BLOCK_SIZE)
+        head = f.read(2)
+        if len(head) == 2 and head[0] == 0xFF and head[1]:
+            found.setdefault(head[1], k)
+    if not found:
+        return
+    scale = 2 if divide_blocks else 1
+    in_place = sum(1 for n, k in found.items() if n == k * scale)
+    if in_place == len(found):
+        return
+    if in_place * 2 > len(found):
+        # Mostly in place: a few stray blocks are more likely stale data than a shift.
+        return
+    print(f"Block headers out of position ({len(found) - in_place} of {len(found)}); placing blocks by header number")
+    for entry in file_directory:
+        entry["blocks"] = [found.get(b * scale) for b in entry["blocks"]]
+
 def read_catalog(img_path):
     """Read the file catalog from disk image"""
     try:
@@ -192,6 +220,7 @@ def read_catalog(img_path):
                 for entry in file_directory:
                     entry["blocks"] = [b // 2 for b in entry["blocks"]]
 
+            remap_by_block_header(f, file_size, file_directory, divide_blocks)
             return file_directory, divide_blocks
 
     except Exception as e:
@@ -208,6 +237,10 @@ def read_file_data(img_path, file_entry):
             first_block = file_entry["blocks"][0]
 
             for block_num in file_entry["blocks"]:
+                if block_num is None:
+                    print(f"Warning: a block of {file_entry['filename'].rstrip()} is missing from the image")
+                    log_bad_file(img_path, "Block missing from image.")
+                    continue
                 # Seek to block
                 f.seek(block_num * BLOCK_SIZE)
                 block = f.read(BLOCK_SIZE)
