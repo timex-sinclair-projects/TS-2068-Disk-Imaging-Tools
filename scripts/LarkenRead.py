@@ -96,6 +96,52 @@ def find_directory_start(block0):
         index += 1
     return None
 
+def choose_single_sided_layout(f, file_directory):
+    """Pick the block layout of a single-sided image larger than 40 tracks.
+
+    Such an image is either tracks in order (block numbers halved) or a
+    single-sided disk imaged double-sided (block numbers used as stored). Every
+    file block starts with 0xFF, so count the markers each layout would hit.
+    """
+    def hits(divide):
+        n = 0
+        for entry in file_directory:
+            for b in entry["blocks"]:
+                f.seek((b // 2 if divide else b) * BLOCK_SIZE)
+                n += f.read(1) == b"\xff"
+        return n
+    halved, stored = hits(True), hits(False)
+    print(f"Single-sided layout check: {halved} valid blocks halved, {stored} as stored")
+    return halved >= stored
+
+def remap_by_block_header(f, file_size, file_directory, divide_blocks):
+    """Place blocks by the logical number LKDOS stores in each block header.
+
+    Byte 1 of every file block holds its logical block number. When an image
+    lost blocks (a dropped sector, or an 80-track disk imaged on a 40-track
+    drive, which keeps only every other cylinder) the computed positions no
+    longer line up, so look each block up by that number instead. Blocks not
+    in the image are set to None and reported as missing.
+    """
+    found = {}
+    for k in range(1, file_size // BLOCK_SIZE):
+        f.seek(k * BLOCK_SIZE)
+        head = f.read(2)
+        if len(head) == 2 and head[0] == 0xFF and head[1]:
+            found.setdefault(head[1], k)
+    if not found:
+        return
+    scale = 2 if divide_blocks else 1
+    in_place = sum(1 for n, k in found.items() if n == k * scale)
+    if in_place == len(found):
+        return
+    if in_place * 2 > len(found):
+        # Mostly in place: a few stray blocks are more likely stale data than a shift.
+        return
+    print(f"Block headers out of position ({len(found) - in_place} of {len(found)}); placing blocks by header number")
+    for entry in file_directory:
+        entry["blocks"] = [found.get(b * scale) for b in entry["blocks"]]
+
 def read_catalog(img_path):
     """Read the file catalog from disk image"""
     try:
@@ -114,14 +160,11 @@ def read_catalog(img_path):
             print(f"Tracks: {tracks}")
             print(f"File size: {file_size}")
 
-            # Determine if we need to divide blocks
-            divide_blocks = file_size < 250000 and sides == 1
-
-            if sides == 1 and file_size > 400000:
-                log_bad_file(img_path, "Single sided imaged as double sided.")
-                sys.exit("Extraction ended. Single sided disk with too many bytes.")
-
-            print(f"Divide blocks: {divide_blocks}")
+            # Block numbers count both sides. A single-sided image normally holds one
+            # track after another, so the numbers are halved; but a single-sided disk
+            # imaged double-sided (80-track size) keeps the doubled layout. For large
+            # single-sided images the layout is chosen from the block markers below.
+            divide_blocks = sides == 1
 
             # Find directory start dynamically
             dir_start = find_directory_start(first_block)
@@ -150,8 +193,7 @@ def read_catalog(img_path):
                             # Read block list
                             blocks = []
                             while index < len(first_block) and first_block[index] != BLOCK_LIST_END:
-                                block_num = first_block[index] // 2 if divide_blocks else first_block[index]
-                                blocks.append(block_num)
+                                blocks.append(first_block[index])
                                 index += 1
 
                             if blocks:  # Only add if we have blocks
@@ -171,6 +213,14 @@ def read_catalog(img_path):
 
                 index += 1
 
+            if sides == 1 and file_size > 250000:
+                divide_blocks = choose_single_sided_layout(f, file_directory)
+            print(f"Divide blocks: {divide_blocks}")
+            if divide_blocks:
+                for entry in file_directory:
+                    entry["blocks"] = [b // 2 for b in entry["blocks"]]
+
+            remap_by_block_header(f, file_size, file_directory, divide_blocks)
             return file_directory, divide_blocks
 
     except Exception as e:
@@ -187,6 +237,10 @@ def read_file_data(img_path, file_entry):
             first_block = file_entry["blocks"][0]
 
             for block_num in file_entry["blocks"]:
+                if block_num is None:
+                    print(f"Warning: a block of {file_entry['filename'].rstrip()} is missing from the image")
+                    log_bad_file(img_path, "Block missing from image.")
+                    continue
                 # Seek to block
                 f.seek(block_num * BLOCK_SIZE)
                 block = f.read(BLOCK_SIZE)
@@ -215,6 +269,13 @@ def read_file_data(img_path, file_entry):
                 # Get data size and extract data
                 data_size = int.from_bytes(block[14:16], "little")
                 file_content.extend(block[24:24 + data_size])
+
+            if "fileStartAddr" not in file_data:
+                # The file's first block was unreadable, so it has no header; skip it
+                # rather than stopping the whole extraction.
+                print(f"Warning: no readable header for {file_entry['filename'].rstrip()}; file skipped")
+                log_bad_file(img_path, "First block unreadable; file skipped.")
+                return None
 
             file_data["fileContent"] = file_content
             return file_data
