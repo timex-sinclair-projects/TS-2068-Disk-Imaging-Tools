@@ -13,13 +13,14 @@ launchable TAP files.
 ## Usage
 
 ```
-python3 OligerRead.py -f <image_file> [-c] [-s <filename>]
+python3 OligerRead.py -f <image_file> [-c] [-s <filename>] [--carve]
 ```
 
 **Arguments:**
 - `-f`, `--imgfile` - Path to the Oliger .img disk image file (required)
 - `-c`, `--cat` - Display the disk catalog without extracting files
 - `-s`, `--specific` - Extract only the named file
+- `--carve` - When a disk has no catalog but holds data (the catalog track was overwritten), recover files track by track. JLO SAFE stores each file in consecutive tracks from a track boundary, so the reader looks for BASIC line chains and runs of text and saves them as `trackNN.tap` / `trackNN.txt`. File names, types and load addresses are lost with the catalog; programs are saved without autostart. Without the option the reader only warns.
 
 **Examples:**
 ```

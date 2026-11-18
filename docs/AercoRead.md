@@ -72,7 +72,11 @@ companion DOS-64 software combines a disk operating system with OS-64, a
 
 For double-sided disks, blocks 0x00-0x27 (0-39) address side 0 tracks and blocks
 0x80-0xA7 (128-167) address side 1 tracks. In the image file, side 0 occupies
-the first half and side 1 the second half (sequential side storage).
+the first half and side 1 the second half (sequential side storage), or the
+tracks of the two sides alternate (interleaved storage: side 0 track T at image
+track 2T, side 1 track T at 2T+1). Most AERCO images seen so far are interleaved.
+AercoRead picks the layout by checking which one finds the file headers named in
+the directory.
 
 ### Boot Sector (Track 0, Bytes 0-18)
 

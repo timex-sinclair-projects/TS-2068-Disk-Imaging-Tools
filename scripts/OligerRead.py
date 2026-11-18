@@ -36,6 +36,8 @@ def parse_arguments():
                        help="Catalog of disk image contents")
     parser.add_argument("-s", "--specific", type=str,
                        help="Name of a specific program to extract")
+    parser.add_argument("--carve", action='store_true',
+                       help="Recover files track by track when the catalog is gone")
     return parser.parse_args()
 
 def make_safe_filename(input_filename):
@@ -718,6 +720,118 @@ def write_manifest(output_path, img_path, disk_info, extracted_files):
 
     print(f"Manifest written to {manifest_path}")
 
+CARVE_MIN_LINES = 5       # shortest BASIC line chain accepted as a program
+CARVE_TEXT_RATIO = 0.85   # share of printable bytes for a track to count as text
+
+
+def basic_chain(data, pos):
+    """Return the end offset of the BASIC line chain starting at pos, or None.
+
+    A line is a 2-byte big-endian number, a 2-byte length and that many bytes
+    ending in ENTER (0x0D); numbers must rise from line to line.
+    """
+    end, last, lines = pos, -1, 0
+    while end + 4 <= len(data):
+        num = data[end] * 256 + data[end + 1]
+        length = data[end + 2] | data[end + 3] << 8
+        if not (last < num < 10000) or not (1 <= length <= 2000):
+            break
+        if end + 4 + length > len(data) or data[end + 3 + length] != 0x0D:
+            break
+        last, lines, end = num, lines + 1, end + 4 + length
+    return end if lines >= CARVE_MIN_LINES else None
+
+
+def vars_end(data, pos, limit=24000):
+    """Walk a variables area from pos; return the offset after its 0x80 marker."""
+    end = pos
+    while end < len(data) and end - pos < limit:
+        b = data[end]
+        if b == 0x80:
+            return end + 1
+        kind = b >> 5
+        if kind == 3:                       # one-letter number
+            end += 6
+        elif kind in (2, 4, 6):             # string, number array, string array
+            if end + 3 > len(data):
+                return None
+            end += 3 + (data[end + 1] | data[end + 2] << 8)
+        elif kind == 5:                     # long-named number
+            end += 1
+            while end < len(data) and not data[end] & 0x80:
+                end += 1
+            end += 6
+        elif kind == 7:                     # FOR control variable
+            end += 19
+        else:
+            return None
+    return None
+
+
+def is_text(chunk):
+    chunk = chunk.rstrip(b"\xe5\x00")
+    if len(chunk) < 64:
+        return False
+    printable = sum(1 for b in chunk if 32 <= b < 127 or b == 13)
+    return printable >= CARVE_TEXT_RATIO * len(chunk)
+
+
+def carve_disk(img_path, output_path):
+    """Recover files from an image whose catalog has been overwritten.
+
+    JLO SAFE stores each file in consecutive tracks starting at a track
+    boundary, so look at every track for a BASIC line chain (at its start,
+    or failing that anywhere in it) or for a run of text, and save what is
+    found. Names, file types and load addresses are lost with the catalog,
+    so programs are saved without autostart and files are named by track.
+    """
+    with open(img_path, 'rb') as f:
+        data = f.read()
+    tracks = len(data) // BLOCK_SIZE
+    found = []
+    t = 1
+    while t < tracks:
+        track = data[t * BLOCK_SIZE:(t + 1) * BLOCK_SIZE]
+        if all(b in (0xE5, 0x00) for b in track):
+            t += 1
+            continue
+        start = t * BLOCK_SIZE
+        end = basic_chain(data, start)
+        if end is None:
+            for pos in range(start + 1, start + BLOCK_SIZE - 4):
+                end = basic_chain(data, pos)
+                if end is not None:
+                    start = pos
+                    break
+        if end is not None:
+            prog_len = end - start
+            vend = vars_end(data, end) or end
+            body = data[start:vend]
+            name = f"track{t:02d}"
+            header = (b"\x00" + name.ljust(10).encode() + len(body).to_bytes(2, "little")
+                      + (0x8000).to_bytes(2, "little") + prog_len.to_bytes(2, "little"))
+            out = unique_path(os.path.join(output_path, name + ".tap"))
+            with open(out, "wb") as f:
+                f.write(build_tap_block(0x00, header) + build_tap_block(0xFF, body))
+            found.append((name, "BASIC", len(body), out))
+            t = (vend - 1) // BLOCK_SIZE + 1
+            continue
+        if is_text(track):
+            last = t
+            while last + 1 < tracks and is_text(data[(last + 1) * BLOCK_SIZE:(last + 2) * BLOCK_SIZE]):
+                last += 1
+            text = data[t * BLOCK_SIZE:(last + 1) * BLOCK_SIZE].rstrip(b"\xe5\x00")
+            name = f"track{t:02d}"
+            out = unique_path(os.path.join(output_path, name + ".txt"))
+            with open(out, "w") as f:
+                f.write(text.decode("latin-1").replace("\r", "\n"))
+            found.append((name, "text", len(text), out))
+            t = last + 1
+            continue
+        t += 1
+    return found
+
+
 def main():
     args = parse_arguments()
 
@@ -739,6 +853,24 @@ def main():
         catalog = read_catalog(args.imgfile)
 
     if not catalog:
+        if is_v1 and not args.cat:
+            with open(args.imgfile, 'rb') as f:
+                f.seek(BLOCK_SIZE)
+                rest = f.read()
+            if any(b not in (0xE5, 0x00) for b in rest):
+                print("Warning: no catalog, but the disk holds data (catalog track overwritten?).")
+                if not args.carve:
+                    print("If this is a JLO SAFE disk, run again with --carve to recover files by track.")
+                    return
+                print("Carving files by track; names, types and load addresses are lost.")
+                output_path = os.path.splitext(os.path.basename(args.imgfile))[0]
+                os.makedirs(output_path, exist_ok=True)
+                found = carve_disk(args.imgfile, output_path)
+                for name, kind, size, out in found:
+                    print(f"  {name}: {kind}, {size} bytes -> {os.path.basename(out)}")
+                print(f"Carved {len(found)} files.")
+                log_bad_file(args.imgfile, f"No catalog; {len(found)} files carved by track.")
+                return
         print("Empty catalog.")
         return
 
